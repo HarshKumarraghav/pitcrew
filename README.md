@@ -42,8 +42,10 @@ Measured on a 24 GB Apple M5 MacBook Pro with Chrome, Zed, Slack and Spotify ope
 
 - Kernel memory pressure was already **warn** and ~13 GB were in swap *before any model loaded*.
 - Loading a 7.6 GB coding model pushed **≈ 5.7 GB of other apps into swap**.
-- OpenCode's default prompt with a typical skills folder is **≈ 24k tokens**; Ollama's default
-  context is **4,096** → ~83% of the prompt would be silently cut.
+- OpenCode's default prompt with a typical skills folder is **≈ 24k tokens** (≈ 5.9k with the
+  local profile). Ollama advertises a 4,096-token default context; on Ollama 0.40 with the MLX
+  runner the full 5,858-token prompt still reached the model (measured), so truncation depends on
+  runtime and version — Pit Crew sizes the window explicitly instead of relying on defaults.
 - OpenCode's session-title request went to the same thinking model, ran for 5 minutes and
   **blocked the first agent step for 5 m 20 s**.
 

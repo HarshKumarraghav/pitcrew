@@ -26,8 +26,10 @@ request (≈ 2.1k chars, no tools) is sent per session via `small_model`.
 **Consequences**
 - An 8k context cannot hold even the trimmed agent prompt plus an output budget.
   16k is the floor; **32k is the default** for the local profile.
-- With the user's default skills, a local model would need ≥ 32k just to start, and Ollama's
-  stock 4,096-token context would silently truncate ~83% of the prompt.
+- With the user's default skills, a local model would need ≥ 32k just to start.
+- *Correction (M4 load test):* Ollama documents a 4,096-token default, but on Ollama 0.40.11 with
+  the MLX runner (`qwen3.5:9b`, no `num_ctx` set) the model reported all 5,858 prompt tokens — no
+  truncation was observed. Earlier text claiming ~83% would be cut was an untested inference.
 - Each skill-heavy request costs ~3× the prefill time on a local model.
 
 ## M1.4–M1.6 — qwen3.5:9b on Ollama (MLX runner), measured
@@ -112,3 +114,61 @@ long-running `opencode acp` processes (editor integration using the user's *glob
 alive, so the OpenCode connections cannot be attributed. Controlled re-runs with the local profile
 (capture backend, 25 s each, per-PID watcher) showed **no** non-loopback connections. All model
 requests in the Ollama log came from 127.0.0.1. Re-verified per-PID in M4.
+
+## M4 — routine tasks A–F: direct vs Pit Crew modes (measured, 11-03)
+
+Same model (`qwen3.5:9b`, NVFP4, Ollama 0.40.11), same OpenCode 1.18.35, same six tasks and hidden
+verifiers. All runs below finished by 17:51 on 11-03, before the machine's overnight sleep.
+Docker Desktop (≈ 4.5 GB VM) was running from ≈ 15:30, i.e. during Direct r2/r3 and mode C r2.
+
+| configuration | runs | passed per run | pass rate | wall per 6-task run | avg wait before 1st agent step |
+|---|---|---|---|---|---|
+| Direct — OpenCode → Ollama, `small_model` = same model | 3 | 5/6, 3/6, 3/6 | **61%** | 2,391 / 3,036 / 3,191 s | 275–370 s |
+| Pit Crew mode A — single model, helper requests capped, thinking off | 1 | 5/6 | 83% | 1,166 s | 9 s |
+| Pit Crew mode B — helpers → 0.8B, sequential | 1 | 6/6 | 100% | 1,256 s | 18 s |
+| Pit Crew mode C — helpers → 0.8B only if it fits without eviction | 2 | 6/6, 5/6 | **92%** | 1,536 / 686 s | 20 s |
+| Pit Crew mode C + "breakthrough" gateway changes (separate config) | 1 | 5/6 | 83% | 1,381 s | 11 s |
+
+Per task (passes / runs): Direct A 3/3 · B 1/3 · C 1/3 · D 3/3 · E 3/3 · F 0/3; mode C (r1–r2)
+A 2/2 · B 2/2 · C 2/2 · D 2/2 · E 2/2 · F 1/2. Task F contains a route-shadowing trap
+(`/tasks/stats` registered after `/tasks/:id`); it is the hardest of A–F.
+
+**Reading it:** the model is identical, so the gain is not "a smarter model". It comes from removing
+the session-title stall (helper requests no longer block the agent) and from not swapping the coder
+out. Small samples (1–3 runs); treat the A/B/C ordering as unresolved.
+
+## M4 / M10 — load test: 6 concurrent clients over 3 models
+
+2 clients send the real 5,858-token OpenCode request to the 9B coder, 2 chat with `qwen3.5:2b`, 2
+ask `qwen3.5:0.8b` for titles; 3 rounds each = 18 requests per run. No truncation in any mode.
+
+**Current results (11-03 17:53–18:01 IST, Mac awake, 3 interleaved repeats, median (min–max)):**
+
+| round | mode | total wall | title p50 | agent p95 | background chat p95 | swapped out | s critical |
+|---|---|---|---|---|---|---|---|
+| 1 (`summary-2026-11-03T12-23-32-972Z.json`) | direct, coder 32k | **40.0 s** (39.6–48.3) | 0.21 s | 31.0 s | 8.5 s | 0.50 (0–5.36) GB | 0 |
+| 1 | Pit Crew | 47.1 s (46.7–50.3) | 0.22 s | **15.4 s** | 33.5 s | 1.09 (0.54–1.14) GB | 0 |
+| 2 (`summary-2026-11-03T12-31-37-531Z.json`, after two fixes) | direct, coder 32k | **39.9 s** (38.1–42.3) | 0.22 s | 27.9 s | 16.2 s | 3.32 (0–3.54) GB | 0 |
+| 2 | Pit Crew | 43.0 s (42.7–49.4) | 0.25 s | **14.9 s** | 32.8 s | **0.13** (0–1.57) GB | 0 |
+
+**Reading it:** Pit Crew is still ~8% slower in total time. It roughly halves the agent's worst-case
+latency (p95 27.9 → 14.9 s) and in round 2 swapped out less (median 0.13 vs 3.32 GB, but the ranges
+overlap). The price is background chat: its p95 doubles (16 → 33 s) because interactive work goes first.
+All 18/18 requests succeeded in every mode. Details: `docs/PLAN.md` M10.6.
+
+*Superseded:* a single run on 11-03 15:28 with the earlier gateway (Docker running) gave Pit Crew
+83 s vs 41 s direct; kept in `bench/results/load/` for the record.
+
+## End-to-end check (`bench/e2e.sh`, 11-03 15:31)
+
+27 / 28 checks passed (tests, typecheck, build, every CLI command, every gateway endpoint against
+real Ollama, router, cloud refusal, oversize refusal, streaming, native API, metrics, dashboard).
+Failed: "OpenCode → Pit Crew edits a file" — after 17 s no `src/version.ts` existed; not yet
+diagnosed.
+
+## Validity notes
+
+- The Mac slept (clamshell, lid closed) 11-03 18:22 → 11-04 00:52 and again 04:00 → 04:04
+  (`pmset -g log`). Runs overlapping a sleep measure nothing and are marked `invalid` and excluded.
+  An earlier explanation of Claude Code "stalls" as rate limiting was wrong — they were sleep.
+- Machine state per task is logged in `bench/agent/results/machine-state.log`.
