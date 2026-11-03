@@ -339,20 +339,14 @@ export class Scheduler {
 
   /**
    * Memory a resident model is still expected to take: it has grown to `steadyBytes` before
-   * (prompt cache, KV), so admission keeps that room instead of trusting the size at load time.
-   * Capped at maxResidentBytes, since the unit is recycled above that.
+   * (prompt cache, KV), so *other* models are admitted against that size instead of the size at
+   * load time. Capped at maxResidentBytes, since the unit is recycled above that. A unit's own
+   * loads never count its past growth: that once deadlocked a 32k→64k reload (11-04, task F).
    */
   private growth(u: Unit): number {
     if (u.kind !== "llm" || u.foreign || u.state !== "ready") return 0;
     const steady = u.maxResidentBytes > 0 ? Math.min(u.steadyBytes, u.maxResidentBytes) : u.steadyBytes;
     return Math.max(0, steady - u.bytes);
-  }
-
-  /** Expected size of a unit once it has been in use for a while, for a load estimated at `est`. */
-  private expected(u: Unit, est: number): number {
-    const grown = Math.max(0, u.steadyBytes - u.loadedBytes);
-    const cap = u.maxResidentBytes > 0 ? u.maxResidentBytes : Number.POSITIVE_INFINITY;
-    return Math.max(est, Math.min(est + grown, cap));
   }
 
   snapshot() {
@@ -406,13 +400,17 @@ export class Scheduler {
     return "strict";
   }
 
-  admission(key: string, need: number, forPriority: Priority, policy?: MemoryPolicy): Admission {
+  /**
+   * `selfBytes`: memory the requesting unit holds now and gives back before loading (a reload to
+   * grow its window), so it is not counted against the new load.
+   */
+  admission(key: string, need: number, forPriority: Priority, policy?: MemoryPolicy, selfBytes = 0): Admission {
     const m = this.mem();
     const budget = this.budget() ?? Number.POSITIVE_INFINITY;
     if (need > budget) return { kind: "never", reason: `needs ${fmt(need)}, budget ${fmt(budget)}` };
     if (m?.state === "critical") return { kind: "wait", reason: "memory is thrashing; holding new loads" };
-    const committed = this.committed();
-    const head = m ? this.headroom(m, this.policyFor(need, policy)) : Number.POSITIVE_INFINITY;
+    const committed = this.committed() - selfBytes;
+    const head = m ? this.headroom(m, this.policyFor(need, policy)) + selfBytes : Number.POSITIVE_INFINITY;
     if (committed + need <= budget && need <= head) return { kind: "fits" };
 
     const wanted = new Set(
@@ -547,8 +545,8 @@ export class Scheduler {
             p.waitReason = `draining ${u.key} to grow context ${u.ctx}→${p.req.ctx}`;
             continue;
           }
-          const extra = Math.max(0, p.req.estimate(p.req.ctx) - u.bytes);
-          const plan = this.admission(u.key, extra, prio, p.req.policy);
+          const self = u.bytes + this.growth(u);
+          const plan = this.admission(u.key, p.req.estimate(p.req.ctx), prio, p.req.policy, self);
           if (plan.kind === "fits" || plan.kind === "evict") {
             void this.reload(u, p.req.ctx, plan.kind === "evict" ? plan.victims : [], p.req);
           } else this.handlePlan(p, u, plan, p.req.ctx);
@@ -559,9 +557,7 @@ export class Scheduler {
       }
 
       // unloaded or failed-and-cooled-down
-      // Learned growth raises the reservation, but never turns a model that fits into a "never".
-      const est = p.req.estimate(p.req.ctx);
-      const need = Math.max(est, Math.min(this.expected(u, est), this.budget() ?? Number.POSITIVE_INFINITY));
+      const need = p.req.estimate(p.req.ctx);
       const plan = this.admission(u.key, need, prio, p.req.policy);
       if (plan.kind === "fits" || plan.kind === "evict") {
         void this.loadUnit(u, p.req, plan.kind === "evict" ? plan.victims : []);

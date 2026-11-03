@@ -75,6 +75,8 @@ test("request kind, session key and tail shape", () => {
   assert.equal(requestKind({ messages: [sys, { role: "user", content: "x" }, { role: "assistant", content: "y" }] }, 20_000, 8000), "compaction");
   const summary = { messages: [{ role: "system", content: "Summarize the conversation so far." }, { role: "user", content: "a" }, { role: "assistant", content: "b" }] };
   assert.equal(requestKind(summary, 500, 8000), "compaction");
+  const titleReq = { messages: [{ role: "system", content: "You are a title generator… a brief title that would help the user find this conversation later; summarize it." }, { role: "user", content: "Generate a title for this conversation:" }, { role: "user", content: "fix the bug" }] };
+  assert.equal(requestKind(titleReq, 2700, 8000), "helper", "title requests are not compactions");
   const k1 = sessionKey(agent);
   const k2 = sessionKey({ ...agent, messages: [...agent.messages, { role: "assistant", content: "ok" }] });
   assert.equal(k1, k2, "same conversation → same key as it grows");

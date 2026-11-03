@@ -284,7 +284,23 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
     });
     const t0 = Date.now();
     const priority = priorityOf(req, r.priority);
-    const lease = await leaseLlm(r, choice.ctx, priority, ac.signal);
+    let lease: Lease;
+    try {
+      lease = await leaseLlm(r, choice.ctx, priority, ac.signal);
+    } catch (e) {
+      // Requests that never got a slot (client gave up, queue timeout, refused) are logged too:
+      // otherwise a stalled run looks like an idle client in the time budget.
+      if (reqLog && kind !== "embed") {
+        const waited = Date.now() - receivedAt;
+        void reqLog.write({
+          t: new Date(receivedAt).toISOString(), tMs: receivedAt, path, requested: String(body.model ?? ""), alias: r.alias, base: r.base, variant: "", kind: reqKind,
+          route: routeInfo?.split(" ")[0], step, levers, session, priority, ctx: choice.ctx, promptChars: chars, tail, stream: Boolean(body.stream),
+          status: ac.signal.aborted ? "aborted" : "error", leaseMs: waited, queuedMs: waited, endMs: waited, reasoningChars: 0, contentChars: 0, toolCalls: [],
+          finish: `not started: ${(e as Error).message.slice(0, 120)}`,
+        });
+      }
+      throw e;
+    }
     const leaseMs = Date.now() - receivedAt;
     const variant = loadedVariant.get(r.base) ?? derivedName(r.base, lease.ctx, r.spec.parameters ?? {});
     const tap = new StreamTap(receivedAt);

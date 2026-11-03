@@ -406,21 +406,45 @@ test("a model that grew past its cap is reloaded once idle, and its growth is re
   assert.equal(m.sched.committed(), 8 * G);
 });
 
-test("learned growth: a reload reserves its grown size, but is never refused outright for it", async () => {
+test("learned growth is reserved against other models, never against the model itself", async () => {
   const m = machine({ available: 30 * G, gpu: 20 * G, queueTimeoutMs: 60_000 });
-  (await m.sched.acquire(m.req("coder", 6 * G))).release();
+  const l = await m.sched.acquire(m.req("coder", 6 * G, { maxResidentBytes: 10 * G }));
+  l.release();
   m.sched.observeResident([{ key: "coder", governed: true, bytes: 12 * G, activity: 1 }]);
-  await m.sched.unload("coder");
-  // A pinned 8G model takes part of the 18G budget (0.9 × 20G), leaving 10G.
-  (await m.sched.acquire(m.req("other", 8 * G, { pin: true }))).release();
-  let state = "waiting";
-  const p = m.sched.acquire(m.req("coder", 6 * G)).then((x) => { state = "ok"; x.release(); }, (e) => { state = `rejected ${e.status}`; });
+  m.advance(6000); // idle above the cap → recycled back to 6G, expected to grow to the 10G cap
   await flush();
-  // Plain estimate 6G would fit; the learned 12G does not → it waits (not a 507).
-  assert.equal(state, "waiting");
+  await flush();
+  assert.equal(m.sched.units.get("coder")!.bytes, 6 * G);
+  // Budget 18G: a 9G model fits against the coder's load-time size (6G) but not its learned 10G
+  // (the coder is busy, so it cannot be evicted).
+  const busy = await m.sched.acquire(m.req("coder", 6 * G, { maxResidentBytes: 10 * G }));
+  let other = "waiting";
+  const p = m.sched.acquire(m.req("other", 9 * G, { pin: true })).then((x) => { other = "ok"; x.release(); }, () => { other = "rejected"; });
+  await flush();
+  assert.equal(other, "waiting");
   assert.match(m.sched.snapshot().queue[0]?.reason ?? "", /budget in use/);
-  m.sched["units"].get("other")!.pin = false;
-  m.advance(10);
+  busy.release();
   await p;
-  assert.equal(state, "ok");
+  await m.sched.unload("other").catch(() => undefined);
+  m.sched.units.get("other")!.pin = false;
+  // The coder itself can always grow its window: its own memory is given back first.
+  const big = await m.sched.acquire(m.req("coder", 16 * G, { ctx: 65536, maxResidentBytes: 10 * G }));
+  assert.equal(big.ctx, 65536);
+  big.release();
+  void p;
+});
+
+test("a context-grow reload is admitted even when the model has outgrown the budget", async () => {
+  const m = machine({ available: 30 * G, gpu: 18 * G, queueTimeoutMs: 60_000 });
+  (await m.sched.acquire(m.req("small", 1.2 * G, { pin: true }))).release();
+  (await m.sched.acquire(m.req("coder", 7 * G, { ctx: 32768 }))).release();
+  // Grew to 17.4G — above the 16.2G model budget (0.9 × 18G), as measured on 11-04.
+  m.sched.observeResident([
+    { key: "small", governed: true, bytes: 1.2 * G, activity: 1 },
+    { key: "coder", governed: true, bytes: 17.4 * G, activity: 1 },
+  ]);
+  const l = await m.sched.acquire(m.req("coder", 8.5 * G, { ctx: 65536 }));
+  assert.equal(l.ctx, 65536);
+  l.release();
+  assert.deepEqual(m.log, ["load:small", "load:coder", "unload:coder", "load:coder"]);
 });

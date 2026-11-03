@@ -50,6 +50,7 @@ export function timeBudget(result, events, requests) {
   if (!t0 || !t1) return undefined;
   const inWin = requests.filter((r) => r.tMs >= t0 - 500 && r.tMs <= t1);
   const agent = inWin.filter((r) => r.kind !== "helper").sort((a, b) => a.tMs - b.tMs);
+  const stalled = agent.filter((r) => typeof r.finish === "string" && r.finish.startsWith("not started"));
   const helpers = inWin.filter((r) => r.kind === "helper");
   const ms = { startup: 0, queue: 0, prefill: 0, reasoning: 0, content: 0, otherDecode: 0, tools: 0, client: 0, shutdown: 0 };
   const tools = events
@@ -96,6 +97,7 @@ export function timeBudget(result, events, requests) {
     reasoningSharePct: Math.round((ms.reasoning / wall) * 1000) / 10,
     agentRequests: agent.length,
     compactions: agent.filter((r) => r.kind === "compaction").length,
+    neverStarted: stalled.length,
     helperRequests: helpers.length,
     helperS: s(helpers.reduce((a, r) => a + (r.endMs ?? 0), 0)),
     promptTokensPeak: Math.max(0, ...agent.map((r) => r.promptTokens ?? 0)),
@@ -124,7 +126,7 @@ export function budgetsForDir(dir, requests) {
     });
 }
 
-const COLS = ["task", "success", "wallS", "startupS", "queueS", "prefillS", "reasoningS", "contentS", "otherDecodeS", "toolsS", "clientS", "shutdownS", "sumPct", "reasoningSharePct", "agentRequests", "compactions"];
+const COLS = ["task", "success", "wallS", "startupS", "queueS", "prefillS", "reasoningS", "contentS", "otherDecodeS", "toolsS", "clientS", "shutdownS", "sumPct", "reasoningSharePct", "agentRequests", "compactions", "neverStarted"];
 
 export function formatBudgets(rows) {
   const lines = [`| ${COLS.join(" | ")} |`, `|${COLS.map(() => "---").join("|")}|`];

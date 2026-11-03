@@ -172,7 +172,9 @@ export function requestKind(body: Record<string, unknown>, promptChars: number, 
   const sys = msgs.filter((m) => m.role === "system").map((m) => textOf(m.content)).join("\n");
   const lastUser = [...msgs].reverse().find((m) => m.role === "user");
   if (promptChars > helperMaxChars) return "compaction";
-  if (msgs.length > 2 && (COMPACTION.test(sys.slice(0, 2000)) || COMPACTION.test(textOf(lastUser?.content).slice(0, 2000)))) return "compaction";
+  // A summary instruction only means compaction when there is a conversation to compact; title
+  // requests ("…help the user find this conversation later") have no assistant turns.
+  if (msgs.some((m) => m.role === "assistant") && (COMPACTION.test(sys.slice(0, 2000)) || COMPACTION.test(textOf(lastUser?.content).slice(0, 2000)))) return "compaction";
   return "helper";
 }
 
