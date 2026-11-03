@@ -11,6 +11,7 @@ import { MemoryMonitor } from "../system/memory.ts";
 import { Metrics } from "./metrics.ts";
 import { chooseContext, promptChars, requestedOutput, TokenCalibrator } from "./context.ts";
 import { route } from "./router.ts";
+import { StreamTap, RequestLog, derive, requestKind, sessionKey, tailShape, type RequestRecord } from "./telemetry.ts";
 
 const GiB = 1024 ** 3;
 const MAX_BODY = 64 * 1024 * 1024;
@@ -86,6 +87,7 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
   /** base model → currently loaded derived variant. */
   const loadedVariant = new Map<string, string>();
   const jobPeak = new Map<string, number>();
+  const reqLog = cfg.telemetry.enabled ? new RequestLog(cfg.telemetry.path ?? join(cfg.stateDir, "requests.jsonl")) : undefined;
 
   const memView = (): MemoryView | undefined => {
     const s = monitor.latest;
@@ -206,6 +208,7 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
   // ─────────────── route handlers ───────────────
 
   async function proxyModelRequest(req: IncomingMessage, res: ServerResponse, path: string, kind: "openai" | "native" | "embed"): Promise<void> {
+    const receivedAt = Date.now();
     const raw = await readBody(req);
     let body: Record<string, unknown>;
     try {
@@ -216,6 +219,10 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
     let requested = String(body.model ?? "");
     if (!requested) throw new HttpError(400, "model is required");
     const chars = promptChars(body);
+    // Telemetry facts are taken from the request as the client sent it (before any router patch).
+    const reqKind = requestKind(body, chars, cfg.router.helperMaxPromptChars);
+    const session = sessionKey(body);
+    const tail = tailShape(body);
     let routeInfo: string | undefined;
     if (requested === cfg.router.name && kind !== "embed") {
       const lightFits = cfg.router.mode === "C" && cfg.router.light ? await canHost(cfg.router.light) : false;
@@ -245,8 +252,12 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
       if (!res.writableFinished) ac.abort();
     });
     const t0 = Date.now();
-    const lease = await leaseLlm(r, choice.ctx, priorityOf(req, r.priority), ac.signal);
+    const priority = priorityOf(req, r.priority);
+    const lease = await leaseLlm(r, choice.ctx, priority, ac.signal);
+    const leaseMs = Date.now() - receivedAt;
     const variant = loadedVariant.get(r.base) ?? derivedName(r.base, lease.ctx, r.spec.parameters ?? {});
+    const tap = new StreamTap(receivedAt);
+    let status: RequestRecord["status"] = "error";
     let ok = false;
     try {
       const fwd: Record<string, unknown> = { ...body, model: variant };
@@ -274,6 +285,7 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
         ...(routeInfo ? { "x-pitcrew-route": routeInfo } : {}),
       };
       res.writeHead(upstream.status, headers);
+      status = upstream.status;
       let tail = "";
       let first = true;
       if (upstream.body) {
@@ -283,6 +295,7 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
             metrics.observe("pitcrew_ttft_seconds", (Date.now() - t0) / 1000, { model: r.base }, undefined, "Time from request to first upstream byte, incl. queue + load (measured)");
           }
           res.write(chunk);
+          tap.push(chunk);
           tail = (tail + Buffer.from(chunk).toString("utf8")).slice(-8192);
         }
       }
@@ -298,10 +311,49 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
       metrics.inc("pitcrew_requests_total", { model: r.base, status: String(upstream.status) }, 1, "Requests forwarded");
       metrics.observe("pitcrew_request_seconds", (Date.now() - t0) / 1000, { model: r.base }, undefined, "End-to-end request time (measured)");
     } catch (e) {
-      if (ac.signal.aborted) metrics.inc("pitcrew_requests_total", { model: r.base, status: "aborted" });
-      else throw e;
+      if (ac.signal.aborted) {
+        status = "aborted";
+        metrics.inc("pitcrew_requests_total", { model: r.base, status: "aborted" });
+      } else throw e;
     } finally {
       lease.release({ ok });
+      if (reqLog && kind !== "embed") {
+        const t = tap.finish();
+        const endAt = receivedAt + (t.endMs ?? Date.now() - receivedAt);
+        void reqLog.write({
+          t: new Date(receivedAt).toISOString(),
+          tMs: receivedAt,
+          path,
+          requested: String(body.model ?? ""),
+          alias: r.alias,
+          base: r.base,
+          variant,
+          kind: reqKind,
+          step: routeInfo?.split(" ")[0],
+          session,
+          priority,
+          ctx: lease.ctx,
+          promptChars: chars,
+          tail,
+          stream: Boolean(body.stream),
+          status,
+          leaseMs,
+          queuedMs: lease.queuedMs,
+          firstByteMs: t.firstByteMs,
+          firstReasoningMs: t.firstReasoningMs,
+          firstContentMs: t.firstContentMs,
+          endMs: t.endMs,
+          gapMs: reqLog.gap(session, receivedAt, endAt),
+          promptTokens: t.promptTokens,
+          completionTokens: t.completionTokens,
+          reasoningTokens: t.reasoningTokens,
+          reasoningChars: t.reasoningChars,
+          contentChars: t.contentChars,
+          toolCalls: t.toolCalls,
+          finish: t.finish,
+          ...derive(t, leaseMs, cfg.telemetry.coldPrefillTokPerS),
+        });
+      }
     }
   }
 

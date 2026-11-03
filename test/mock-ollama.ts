@@ -25,6 +25,8 @@ export async function startMockOllama(models: MockModel[], opts: { tokenDelayMs?
   const created = new Map<string, { from: string; num_ctx: number }>();
   const loaded = new Map<string, number>();
   const calls: string[] = [];
+  /** Bodies of chat-completion requests as the backend received them. */
+  const bodies: Record<string, unknown>[] = [];
   const baseOf = (name: string) => created.get(name)?.from ?? name;
   const sizeOf = (name: string) => {
     const m = models.find((x) => x.name === baseOf(name));
@@ -91,6 +93,7 @@ export async function startMockOllama(models: MockModel[], opts: { tokenDelayMs?
       return done();
     }
     if (url === "/v1/chat/completions") {
+      bodies.push(body);
       if (!loaded.has(body.model)) loaded.set(body.model, sizeOf(body.model));
       const promptTokens = Math.round(JSON.stringify(body.messages).length / 4);
       if (!body.stream) {
@@ -105,6 +108,13 @@ export async function startMockOllama(models: MockModel[], opts: { tokenDelayMs?
       res.writeHead(200, { "content-type": "text/event-stream" });
       const send = (o: unknown) => res.write(`data: ${JSON.stringify(o)}\n\n`);
       const delay = () => new Promise((r) => setTimeout(r, opts.tokenDelayMs ?? 0));
+      // Thinking models stream their reasoning first (Ollama /v1 uses delta.reasoning).
+      if (body.reasoning_effort && body.reasoning_effort !== "none") {
+        for (let i = 0; i < 2; i++) {
+          send({ id: "x", object: "chat.completion.chunk", choices: [{ index: 0, delta: { reasoning: `hmm${i} ` } }] });
+          await delay();
+        }
+      }
       for (let i = 0; i < (body.max_tokens ?? 3); i++) {
         if (res.destroyed) return;
         send({ id: "x", object: "chat.completion.chunk", choices: [{ index: 0, delta: { content: `t${i} ` } }] });
@@ -123,5 +133,5 @@ export async function startMockOllama(models: MockModel[], opts: { tokenDelayMs?
   });
   await new Promise<void>((r) => server.listen(0, "127.0.0.1", () => r()));
   const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
-  return { url, calls, loaded, created, close: () => new Promise<void>((r) => server.close(() => r())) };
+  return { url, calls, bodies, loaded, created, close: () => new Promise<void>((r) => server.close(() => r())) };
 }

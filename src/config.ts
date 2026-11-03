@@ -112,6 +112,14 @@ export interface Config {
   models: Record<string, ModelAlias | JobSpec>;
   /** Virtual model that routes each request to an alias (modes A/B/C). */
   router: RouterConfig;
+  /** Per-request size/timing log (`requests.jsonl`); never contains prompt or answer text. */
+  telemetry: {
+    enabled: boolean;
+    /** Defaults to <stateDir>/requests.jsonl. */
+    path?: string;
+    /** Cold prefill rate used to estimate uncached prompt tokens (measured: 584 tok/s, qwen3.5:9b, M5). */
+    coldPrefillTokPerS: number;
+  };
   /** Allow model names that are not declared as aliases (still local-only). */
   allowUndeclared: boolean;
   stateDir: string;
@@ -148,6 +156,7 @@ export const DEFAULTS: Config = {
   },
   models: {},
   router: { name: "auto", mode: "C", coder: "coder", light: "small", helperMaxPromptChars: 8000, helperMaxTokens: 512, helperNoThinking: true },
+  telemetry: { enabled: true, coldPrefillTokPerS: 584 },
   allowUndeclared: true,
   stateDir: join(homedir(), ".pitcrew"),
 };

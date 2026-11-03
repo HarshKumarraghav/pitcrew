@@ -1,6 +1,6 @@
 import { test, before, after } from "node:test";
 import assert from "node:assert/strict";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
@@ -178,4 +178,21 @@ test("router model 'auto': helpers and agent turns are routed and labelled", asy
   await agentTurn.arrayBuffer();
   const models = ((await (await fetch(`${base}/v1/models`)).json()) as { data: { id: string }[] }).data.map((d) => d.id);
   assert.ok(models.includes("auto"));
+});
+
+test("writes one size-and-timing record per request, with reasoning split and no prompt text", async () => {
+  const secret = "SECRET-PROMPT-TEXT-123";
+  const res = await chat("coder", { stream: true, max_tokens: 3, reasoning_effort: "high", messages: [{ role: "system", content: "sys" }, { role: "user", content: secret }], tools: [{ type: "function", function: { name: "read" } }] });
+  await res.text();
+  await new Promise((r) => setTimeout(r, 100));
+  const raw = readFileSync(join(gw.registry["cfg"].stateDir, "requests.jsonl"), "utf8");
+  assert.ok(!raw.includes(secret), "prompt text never logged");
+  const rec = JSON.parse(raw.trim().split("\n").pop()!);
+  assert.equal(rec.kind, "agent");
+  assert.equal(rec.status, 200);
+  assert.ok(rec.firstReasoningMs <= rec.firstContentMs, "reasoning streamed before content");
+  assert.ok(rec.reasoningChars > 0 && rec.contentChars > 0);
+  assert.deepEqual(rec.toolCalls, ["read"]);
+  assert.ok(rec.reasoningDecodeMs >= 0 && rec.contentDecodeMs >= 0 && rec.prefillMs >= 0);
+  assert.match(rec.session, /^[0-9a-f]{12}$/);
 });
