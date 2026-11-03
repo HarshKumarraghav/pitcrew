@@ -489,7 +489,12 @@ export class Scheduler {
     // reserve their memory so two loads are never admitted against the same headroom.
     for (const p of this.ordered()) {
       const prio = this.effectivePriority(p);
-      if (prio !== "interactive" && bgHold) {
+      const u = this.unitFor(p.req);
+      const fast =
+        this.opts.fastLane && u.kind === "llm" && u.state === "ready" && u.ctx >= p.req.ctx && !u.draining && !this.busy.has(u.key);
+      // Memory gating only matters for work that needs new memory: a request for a model that is
+      // already loaded is not held back while apps swap (measured: 4–6 s stalls in the load test).
+      if (prio !== "interactive" && bgHold && !fast) {
         p.waitReason = `${prio} paused (${bgHold})`;
         continue;
       }
@@ -497,9 +502,6 @@ export class Scheduler {
         p.waitReason = "waiting for interactive work";
         continue;
       }
-      const u = this.unitFor(p.req);
-      const fast =
-        this.opts.fastLane && u.kind === "llm" && u.state === "ready" && u.ctx >= p.req.ctx && !u.draining && !this.busy.has(u.key);
       if (!fast && this.running >= this.effectiveMaxConcurrent()) {
         p.waitReason ??= "all slots busy";
         continue;

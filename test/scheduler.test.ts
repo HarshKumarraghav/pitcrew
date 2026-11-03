@@ -316,13 +316,26 @@ test("small helpers use the compressible-memory credit at warn, never at critica
   assert.equal(big, false, "models above the small-model size keep the strict policy at warn");
 });
 
+test("background requests for an already-loaded model are not held while apps swap", async () => {
+  const m = machine({ available: 12 * G });
+  (await m.sched.acquire(m.req("mid", 2 * G, { priority: "background" }))).release();
+  m.mem.thrashing = true;
+  const l = await m.sched.acquire(m.req("mid", 2 * G, { priority: "background" }));
+  l.release();
+  let loaded = false;
+  m.sched.acquire(m.req("other", 2 * G, { priority: "background" })).then((x) => { loaded = true; x.release(); }).catch(() => undefined);
+  await flush();
+  assert.equal(loaded, false, "a background load still waits while swapping");
+  m.mem.thrashing = false;
+});
+
 test("background work runs at warn and pauses only while apps are swapped out", async () => {
   const m = machine({ available: 12 * G });
   m.mem.state = "warn";
   (await m.sched.acquire(m.req("mid", 2 * G, { priority: "background" }))).release();
   m.mem.thrashing = true;
   let ran = false;
-  const p = m.sched.acquire(m.req("mid", 2 * G, { priority: "background" })).then((l) => { ran = true; l.release(); });
+  const p = m.sched.acquire(m.req("mid2", 2 * G, { priority: "background" })).then((l) => { ran = true; l.release(); });
   await flush();
   assert.equal(ran, false);
   assert.match(m.sched.snapshot().queue[0]?.reason ?? "", /swapped out/);
