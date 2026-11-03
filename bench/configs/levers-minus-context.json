@@ -1,0 +1,81 @@
+{
+  "listen": {
+    "host": "127.0.0.1",
+    "port": 11500
+  },
+  "backend": {
+    "url": "http://127.0.0.1:11434",
+    "managed": false,
+    "parallel": "auto"
+  },
+  "memory": {
+    "policy": "balanced",
+    "osReserveGiB": 4,
+    "minFreeGiB": 1,
+    "thrashSwapoutMiBps": 40
+  },
+  "scheduler": {
+    "maxConcurrent": 2,
+    "queueTimeoutMs": 600000,
+    "idleUnloadMs": 900000,
+    "strictPriority": true,
+    "fastLane": true,
+    "backgroundEvictIdleMs": 3000
+  },
+  "context": {
+    "buckets": [
+      8192,
+      16384,
+      32768,
+      65536
+    ],
+    "defaultMaxOutput": 4096
+  },
+  "router": {
+    "name": "auto",
+    "mode": "C",
+    "coder": "coder",
+    "light": "small",
+    "helperMaxPromptChars": 8000,
+    "helperMaxTokens": 512,
+    "helperNoThinking": true,
+    "reasoningBudget": {
+      "enabled": true,
+      "afterRead": "low",
+      "maxTokens": {}
+    },
+    "loopHints": true,
+    "testRepair": true,
+    "planFirst": true
+  },
+  "models": {
+    "coder": {
+      "model": "qwen3.5:9b",
+      "primary": true,
+      "parallel": 1,
+      "minCtx": 32768,
+      "maxCtx": 65536,
+      "priority": "interactive",
+      "parameters": {
+        "temperature": 0.6,
+        "top_p": 0.95,
+        "top_k": 20,
+        "presence_penalty": 0
+      },
+      "maxResidentGiB": 10
+    },
+    "small": {
+      "model": "qwen3.5:0.8b",
+      "maxCtx": 16384,
+      "priority": "interactive",
+      "warm": true,
+      "parallel": 2
+    },
+    "mid": {
+      "model": "qwen3.5:2b",
+      "maxCtx": 32768,
+      "priority": "background",
+      "parallel": 2
+    }
+  }
+}
