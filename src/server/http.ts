@@ -162,6 +162,7 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
       ctx,
       estimate: (c) => fp.estimate(c, kvSlots),
       parallel,
+      maxResidentBytes: r.spec.maxResidentGiB ? r.spec.maxResidentGiB * GiB : undefined,
       pin: r.spec.pin || r.spec.warm,
       policy: r.spec.primary ? "aggressive" : undefined,
       signal,

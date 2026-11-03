@@ -41,7 +41,13 @@ export interface ModelAlias {
    * 1 for the primary/large ones; never more than the backend allows (backend.parallel).
    */
   parallel?: number;
+  /**
+   * Resident-size cap. The model grows while in use (prompt cache, KV); above this size it is
+   * reloaded at the same context once idle for 5 s, which costs one re-prefill on the next request.
+   */
+  maxResidentGiB?: number;
   /** Optional sampling defaults baked into the derived model. */
+
   parameters?: Record<string, number | string>;
 }
 

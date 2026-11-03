@@ -378,3 +378,49 @@ test("thrash relief leaves a foreign model alone until it has been idle long eno
   await flush();
   assert.equal(unloaded, 1);
 });
+
+// ───────────── M9.1: resident-size cap ─────────────
+
+test("a model that grew past its cap is reloaded once idle, and its growth is reserved", async () => {
+  const m = machine({ available: 16 * G });
+  const l = await m.sched.acquire(m.req("coder", 6 * G, { maxResidentBytes: 8 * G }));
+  // The backend reports growth while a request runs: not recycled mid-request.
+  m.sched.observeResident([{ key: "coder", governed: true, bytes: 10 * G, activity: 1 }]);
+  m.advance(6000);
+  await flush();
+  assert.equal(m.sched.stats.recycles, 0, "never recycled while busy");
+  l.release();
+  // Growth is reserved: committed counts the 10G it is at now.
+  assert.equal(m.sched.committed(), 10 * G);
+  m.advance(2000);
+  await flush();
+  assert.equal(m.sched.stats.recycles, 0, "waits until idle for 5 s");
+  m.advance(4000);
+  await flush();
+  await flush();
+  assert.equal(m.sched.stats.recycles, 1);
+  assert.deepEqual(m.log, ["load:coder", "unload:coder", "load:coder"]);
+  const u = m.sched.units.get("coder")!;
+  assert.equal(u.bytes, 6 * G);
+  // After the reload it is expected to grow again up to the cap (8G), not to 10G.
+  assert.equal(m.sched.committed(), 8 * G);
+});
+
+test("learned growth: a reload reserves its grown size, but is never refused outright for it", async () => {
+  const m = machine({ available: 30 * G, gpu: 20 * G, queueTimeoutMs: 60_000 });
+  (await m.sched.acquire(m.req("coder", 6 * G))).release();
+  m.sched.observeResident([{ key: "coder", governed: true, bytes: 12 * G, activity: 1 }]);
+  await m.sched.unload("coder");
+  // A pinned 8G model takes part of the 18G budget (0.9 × 20G), leaving 10G.
+  (await m.sched.acquire(m.req("other", 8 * G, { pin: true }))).release();
+  let state = "waiting";
+  const p = m.sched.acquire(m.req("coder", 6 * G)).then((x) => { state = "ok"; x.release(); }, (e) => { state = `rejected ${e.status}`; });
+  await flush();
+  // Plain estimate 6G would fit; the learned 12G does not → it waits (not a 507).
+  assert.equal(state, "waiting");
+  assert.match(m.sched.snapshot().queue[0]?.reason ?? "", /budget in use/);
+  m.sched["units"].get("other")!.pin = false;
+  m.advance(10);
+  await p;
+  assert.equal(state, "ok");
+});

@@ -43,6 +43,14 @@ export interface Unit {
   lastLoadMs: number;
   /** Request slots on this unit (from the last request; 1 for jobs). */
   parallel: number;
+  /** Size right after the last load. */
+  loadedBytes: number;
+  /** Largest size seen while resident (KV + prompt-cache growth); learned across reloads. */
+  steadyBytes: number;
+  /** Reload the unit once it is idle and above this size (0 = no cap). */
+  maxResidentBytes: number;
+  recycles: number;
+  lastRecycleMs: number;
   ops?: UnitOps;
   /** For foreign units: last time the backend reported activity. */
   lastActivity: number;
@@ -61,6 +69,8 @@ export interface AcquireRequest {
   pin?: boolean;
   /** Max simultaneous requests on this unit (Ollama parallel slots; 1 for jobs). */
   parallel: number;
+  /** Reload when idle and above this resident size (bytes). */
+  maxResidentBytes?: number;
   signal?: AbortSignal;
   label?: string;
   /**
@@ -92,6 +102,7 @@ export interface SchedulerEvent {
     | "timeout"
     | "thrash"
     | "wait"
+    | "recycle"
     | "foreign";
   key?: string;
   id?: number;
@@ -134,6 +145,8 @@ export interface SchedulerOptions {
    * new memory, so holding them back only adds latency.
    */
   fastLane: boolean;
+  /** A unit above its maxResidentBytes is reloaded once it has been idle this long. */
+  recycleIdleMs: number;
 }
 
 export const SCHED_DEFAULTS: Omit<SchedulerOptions, "osReserveBytes" | "minFreeBytes"> = {
@@ -152,6 +165,7 @@ export const SCHED_DEFAULTS: Omit<SchedulerOptions, "osReserveBytes" | "minFreeB
   smallModelBytes: 1.5 * GiB,
   backgroundEvictIdleMs: 3000,
   fastLane: true,
+  recycleIdleMs: 5000,
 };
 
 interface Pending {
@@ -190,7 +204,7 @@ export class Scheduler {
   private timer?: NodeJS.Timeout;
   private dispatching = false;
   private redispatch = false;
-  readonly stats = { started: 0, finished: 0, failed: 0, rejected: 0, timedOut: 0, loads: 0, evictions: 0, queueWaitMs: [] as number[] };
+  readonly stats = { started: 0, finished: 0, failed: 0, rejected: 0, timedOut: 0, loads: 0, evictions: 0, recycles: 0, queueWaitMs: [] as number[] };
 
   constructor(
     opts: Partial<SchedulerOptions> & Pick<SchedulerOptions, "osReserveBytes" | "minFreeBytes">,
@@ -253,7 +267,10 @@ export class Scheduler {
         const u = this.units.get(r.key);
         if (!u) continue;
         seen.add(r.key);
-        if (u.state === "ready" && r.bytes > 0) u.bytes = r.bytes;
+        if (u.state === "ready" && r.bytes > 0) {
+          u.bytes = r.bytes;
+          u.steadyBytes = Math.max(u.steadyBytes, r.bytes);
+        }
         continue;
       }
       const key = `foreign:${r.key}`;
@@ -315,8 +332,26 @@ export class Scheduler {
 
   committed(): number {
     let sum = 0;
-    for (const u of this.units.values()) if (u.state !== "unloaded" && u.state !== "failed") sum += u.bytes;
+    for (const u of this.units.values()) if (u.state !== "unloaded" && u.state !== "failed") sum += u.bytes + this.growth(u);
     return sum;
+  }
+
+  /**
+   * Memory a resident model is still expected to take: it has grown to `steadyBytes` before
+   * (prompt cache, KV), so admission keeps that room instead of trusting the size at load time.
+   * Capped at maxResidentBytes, since the unit is recycled above that.
+   */
+  private growth(u: Unit): number {
+    if (u.kind !== "llm" || u.foreign || u.state !== "ready") return 0;
+    const steady = u.maxResidentBytes > 0 ? Math.min(u.steadyBytes, u.maxResidentBytes) : u.steadyBytes;
+    return Math.max(0, steady - u.bytes);
+  }
+
+  /** Expected size of a unit once it has been in use for a while, for a load estimated at `est`. */
+  private expected(u: Unit, est: number): number {
+    const grown = Math.max(0, u.steadyBytes - u.loadedBytes);
+    const cap = u.maxResidentBytes > 0 ? u.maxResidentBytes : Number.POSITIVE_INFINITY;
+    return Math.max(est, Math.min(est + grown, cap));
   }
 
   snapshot() {
@@ -353,6 +388,7 @@ export class Scheduler {
       // may not be reflected in the last probe sample yet.
       const pending = u.state === "loading" || (u.kind === "job" && u.state === "ready");
       if (pending || (u.state === "ready" && u.chargedAt > m.t - this.opts.probeLagMs)) unseen += u.bytes;
+      unseen += this.growth(u);
     }
     const bonus = policy === "balanced" ? m.inactiveBytes * 0.5 : 0;
     return m.availableBytes - this.opts.minFreeBytes + bonus - unseen;
@@ -527,7 +563,9 @@ export class Scheduler {
       }
 
       // unloaded or failed-and-cooled-down
-      const need = p.req.estimate(p.req.ctx);
+      // Learned growth raises the reservation, but never turns a model that fits into a "never".
+      const est = p.req.estimate(p.req.ctx);
+      const need = Math.max(est, Math.min(this.expected(u, est), this.budget() ?? Number.POSITIVE_INFINITY));
       const plan = this.admission(u.key, need, prio, p.req.policy);
       if (plan.kind === "fits" || plan.kind === "evict") {
         void this.loadUnit(u, p.req, plan.kind === "evict" ? plan.victims : []);
@@ -560,6 +598,7 @@ export class Scheduler {
     }
     u.ops = req.ops;
     u.parallel = req.parallel;
+    u.maxResidentBytes = req.maxResidentBytes ?? 0;
     if (req.priority === "interactive") u.priority = "interactive";
     if (req.pin) u.pin = true;
     return u;
@@ -583,6 +622,11 @@ export class Scheduler {
       loads: 0,
       lastLoadMs: 0,
       parallel: 1,
+      loadedBytes: 0,
+      steadyBytes: 0,
+      maxResidentBytes: 0,
+      recycles: 0,
+      lastRecycleMs: 0,
       lastActivity: 0,
     };
   }
@@ -671,6 +715,8 @@ export class Scheduler {
       u.loads++;
       this.stats.loads++;
       if (r && r.bytes) u.bytes = r.bytes;
+      u.loadedBytes = u.bytes;
+      u.steadyBytes = Math.max(u.steadyBytes, u.bytes);
       u.state = "ready";
       u.chargedAt = this.now();
       u.lastUsed = this.now();
@@ -706,6 +752,40 @@ export class Scheduler {
       this.busy.delete(u.key);
     }
     await this.loadUnit(u, req, victims);
+  }
+
+  /** Reload at the same context to drop accumulated cache memory; costs one re-prefill later. */
+  private async recycle(u: Unit): Promise<void> {
+    if (!u.ops) return;
+    const ops = u.ops;
+    const before = u.bytes;
+    this.busy.add(u.key);
+    u.state = "loading";
+    const t0 = this.now();
+    try {
+      await ops.unload();
+      const r = await ops.load(u.ctx);
+      if (r && r.bytes) u.bytes = r.bytes;
+      else u.bytes = u.loadedBytes || before;
+      u.loadedBytes = u.bytes;
+      u.state = "ready";
+      u.chargedAt = this.now();
+      u.recycles++;
+      u.lastRecycleMs = this.now() - t0;
+      this.stats.recycles++;
+      this.emit("recycle", `${u.key} grew to ${fmt(before)} (cap ${fmt(u.maxResidentBytes)}): reloaded at ctx ${u.ctx} → ${fmt(u.bytes)} in ${(u.lastRecycleMs / 1000).toFixed(1)}s`, u.key, undefined, {
+        before,
+        after: u.bytes,
+        ms: u.lastRecycleMs,
+      });
+    } catch (e) {
+      u.state = "unloaded";
+      u.bytes = 0;
+      this.emit("reject", `recycle ${u.key} failed: ${(e as Error).message}`, u.key);
+    } finally {
+      this.busy.delete(u.key);
+      this.dispatch();
+    }
   }
 
   private async doUnload(u: Unit, why: string): Promise<void> {
@@ -783,6 +863,21 @@ export class Scheduler {
       if (this.degraded && this.okSince && now - this.okSince >= this.opts.recoverMs) {
         this.degraded = false;
         this.emit("thrash", "memory recovered: normal scheduling resumed");
+      }
+    }
+
+    for (const u of this.units.values()) {
+      if (
+        u.kind === "llm" &&
+        !u.foreign &&
+        u.state === "ready" &&
+        u.maxResidentBytes > 0 &&
+        u.bytes > u.maxResidentBytes &&
+        u.inFlight === 0 &&
+        !this.busy.has(u.key) &&
+        now - u.lastUsed >= this.opts.recycleIdleMs
+      ) {
+        void this.recycle(u);
       }
     }
 
