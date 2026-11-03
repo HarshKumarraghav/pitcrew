@@ -4,7 +4,7 @@
 task has a check that proves it is done. Tick the box and append to the progress log when
 a task finishes. Architecture: `docs/ARCHITECTURE.md`.
 
-> NEXT → M10.6 run `bench/load/run.ts --mode direct-default,direct-tuned,governed --repeats 3` once the machine is free (a `bench/run-all.sh` agent run from the previous session was still running on 11-04), judge against the M10 targets, then M7.0. Full order: see "Execution order (breakthrough branch)" below M9.
+> NEXT → M9.1 live diagnosis (`bench/tools/growth.mjs`), voice smoke test, then M7.0 gate rerun (Pit Crew `today` config, A–F) and M7.1 calibration (fair baseline on G–P). A Claude reference run (`bench/run-claude.sh`, Opus 4.5/4.6/4.7 × A–P × 3) was started 17:51 by another session's chained job — don't stop it without the user.
 
 **Objective:** maximise *successful coding tasks per unit of time and hardware* on a 24 GB
 Apple Silicon Mac, with **OpenCode as the only coding-agent interface**, local models only.
@@ -146,9 +146,17 @@ which this Mac never reports while busy → `mid` waited 61–65 s for aging; R-
       `OLLAMA_NUM_PARALLEL` on the server (which also multiplies the coder's KV). Reported, not hidden.
 - [x] M10.5 **load test v2** (R-e): `--mode a,b,c` interleaved, `--repeats N` (median + range), peak swap-out
       rate, responsiveness probe (spawn `/usr/bin/true` every 1 s), seconds at critical, target table.
-- [ ] M10.6 **targets** (median of 3, vs direct-32k): total time ≤ +10% · title p50 ≤ 1 s · agent p95 better ·
+- [x] M10.6 **targets** (median of 3, vs direct-32k): total time ≤ +10% · title p50 ≤ 1 s · agent p95 better ·
       swap-out ≤ direct · 0 s critical · responsiveness p95 better. Missed targets are reported as missed.
-- bug fixed on the way: thrash relief evicted *foreign* models (other clients) without the foreign-idle check.
+      **Round 1 (11-04, `summary-…12-23-32`)**: total 47.1 vs 40.0 s ❌ (+17%) · title 0.22 s ✅ · agent p95 15.4 vs 31.0 s ✅ ·
+      swap 1.09 vs 0.50 GB ❌ · critical 0 ✅ · spawn p95 3.1 vs 4.0 ms ✅. Cause: background `mid` held 4–6 s while
+      apps swapped even though its model was loaded → fast lane now also exempts background work from the swap hold.
+      **Round 2 (after that fix + the growth-deadlock fix, `summary-…12-31-37`)**: total **43.0 (42.7–49.4) vs 39.9 (38.1–42.3) s ✅ +8%** ·
+      title p50 0.25 ✅ · agent p95 **14.9 vs 27.9 s** ✅ · swap **0.13 (0–1.57) vs 3.32 (0–3.54) GB** ✅ (ranges overlap) ·
+      peak swap-out 97 vs 589 MB/s · critical 0 ✅ · spawn p95 2.8 vs 5.8 ms ✅.
+      Cost, reported: background `chat` p95 **32.8 vs 16.2 s** (it waits for the coder by design). Round 2 follows a fix
+      made after seeing round 1, so both rounds are reported.
+- bugs fixed on the way: (1) thrash relief evicted *foreign* models (other clients) without the foreign-idle check; (2) **growth deadlock** (found in `m4-modeC-r3` task F): a coder that had grown to 17.4 GB (> 16 GB budget) could never reload to grow 32k→64k because its own size/learned growth counted against itself → 12 min stall, timeout. Own growth now only counts against *other* models; grow-reloads exclude the unit's own memory; never-started requests are logged.
 
 ## M7 — Throughput breakthrough: same model, more solved tasks per hour
 
@@ -319,3 +327,4 @@ Local commits per milestone on branch `breakthrough`; never pushed.
 - 11-04 Phase 0: git init, initial commit on `main`, branch `breakthrough`. M10.1–M10.5 implemented (55/55 tests). Live probe: Ollama.app serves 1 request per model at a time. Found `bench/run-all.sh` (previous session) still running agent repeat 3; a gateway smoke test at 11:09 briefly evicted its coder once (r3 task A/B timing slightly affected) → foreign-eviction bug fixed. Load runs wait until it finishes.
 - 11-04 code-only work while the old run finished: M7.0 telemetry, M9.1 cap, levers (M7.3–7.5, M8.3), M9.2–9.5, fair-baseline profile, run-claude.sh (Opus 4.5/4.6/4.7 + probe), OpenCode issue draft (`docs/opencode-issue.md`, not filed). 72/72 tests. Captured OpenCode's tool-result/error formats with `bench/tools/script-server.mjs` (no model). Note: `qwen3.5:9b` carries `draft_num_predict 3` in Ollama 0.40 — speculative/MTP decoding may exist now; not explored (out of scope for M7).
 - 11-04 ⚠ the previous session's `bench/run-all.sh` could not be stopped from this session (permission), so its final step `m4-modeC-qwen35-9b-r3` runs on the **breakthrough** gateway code (fast lane, warm helper, telemetry) — not comparable with M4 r1/r2; treat it as an extra 'Pit Crew today' A–F data point.
+- 11-04 M10 done: load test round 1 missed 2 targets; fixes; round 2 met all 6 (details in M10.6). Live: Ollama /v1 streams thinking as `delta.reasoning`; on qwen3.5 `reasoning_effort: "low"` does **not** reduce thinking (951 vs 795 reasoning chars default) — only `"none"` does → reasoning-budget lever must use `none` (escalation rules are the guardrail). First time budget (m4-modeC-r3, A–F): reasoning decode 24.7% of wall overall, 42–78% on C/D/E; sums to 100% ✔.

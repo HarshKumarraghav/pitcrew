@@ -41,7 +41,7 @@
     "helperNoThinking": true,
     "reasoningBudget": {
       "enabled": true,
-      "afterRead": "low",
+      "afterRead": "none",
       "maxTokens": {}
     },
     "injectContext": {

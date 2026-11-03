@@ -9,7 +9,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const base = JSON.parse(readFileSync(join(HERE, "..", "..", "examples", "pitcrew.config.json"), "utf8"));
 const clone = () => structuredClone(base);
 const LEVERS = {
-  reasoning: (c) => (c.router.reasoningBudget = { enabled: true, afterRead: "low", maxTokens: {} }),
+  reasoning: (c) => (c.router.reasoningBudget = { enabled: true, afterRead: "none", maxTokens: {} }),
   context: (c) => (c.router.injectContext = { enabled: true, k: 6, maxChars: 3000 }),
   hints: (c) => (c.router.loopHints = true),
   repair: (c) => (c.router.testRepair = true),
