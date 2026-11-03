@@ -174,7 +174,7 @@ issues the `read` in ~1 s. Steps that follow a test failure or a failed edit kee
 Also reported: seconds, generated tokens, steps, and uncached prefill tokens per solved task.
 Headline numbers are the median of ≥ 3 repeats with the range shown. Ablations use 1 repeat.
 
-- [ ] M7.0 **Instrument first.** Gateway logs per request: kind (agent/helper), prompt tokens,
+- [~] M7.0 **Instrument first.** *(code done 11-04: `src/server/telemetry.ts` SSE tap → `~/.pitcrew/requests.jsonl`, sizes/timings only; `bench/budget.mjs`; live gate pending)* Gateway logs per request: kind (agent/helper), prompt tokens,
       cached vs uncached prefill (`prompt_eval_count`/duration), generated tokens split into
       reasoning and content, decode duration, the chosen tool, and whether a compaction request occurred.
       `bench/summarize.mjs` turns this into a time budget per task.
@@ -184,9 +184,9 @@ Headline numbers are the median of ≥ 3 repeats with the range shown. Ablations
       a flaky test, a misleading error message, config plus code changes, and a long tool chain.
       Each one has hidden verifiers, a reference solution that passes, and an untouched fixture that fails.
       *Target:* the fair baseline passes ~30–60%. A–F stay as a regression set.
-- [ ] M7.2 **Fair baseline**: `opencode.local.json` with `small_model` = `qwen3.5:0.8b` and thinking
+- [~] M7.2 **Fair baseline** *(profile `examples/opencode/opencode.baseline.json`; capture verified title → `qwen3.5:0.8b`, `reasoning_effort: none`, `max_tokens: 512`)*: `opencode.local.json` with `small_model` = `qwen3.5:0.8b` and thinking
       off, OpenCode → Ollama directly, 3 repeats on G–P. This is the number to beat.
-- [ ] M7.3 **Lever 1: per-step reasoning budget** (router). Classify each request from the last
+- [~] M7.3 **Lever 1: per-step reasoning budget** *(code done 11-04, `src/server/levers.ts`, flag `router.reasoningBudget`)* (router). Classify each request from the last
       message: first step or plan, after a test failure or edit error → full thinking; after a successful
       read-only tool result → `reasoning_effort: "none"` (or low). Per-step-kind `max_tokens` cap.
       *Check:* generated tokens per solved task drop ≥ 40% and pass rate is not lower.
@@ -197,10 +197,10 @@ Headline numbers are the median of ≥ 3 repeats with the range shown. Ablations
       safe to skip). Quality is judged on more than pass rate: hidden checks, no tests weakened, diff size,
       and a blind diff review of 5 solved tasks per config. If any of these is worse beyond the run-to-run
       spread, the lever is dropped or narrowed.
-- [ ] M7.4 **Lever 2: prefill and compaction**: keep the request prefix byte-stable (cache
+- [~] M7.4 **Lever 2: prefill and compaction** *(compactions counted from telemetry `kind`; levers only append / extend the system prompt with a byte-stable block)*: keep the request prefix byte-stable (cache
       hits), count compactions, and compare 32k with the existing 64k bucket on compaction cost against memory.
       *Check:* uncached prefill tokens per solved task drop, and pressure never reaches "critical".
-- [ ] M7.5 **Lever 3: fewer steps**: inject `pitcrew context` retrieval into the first request
+- [~] M7.5 **Lever 3: fewer steps** *(code done: `router.injectContext`, `router.loopHints` incl. edit-miss file excerpt)*: inject `pitcrew context` retrieval into the first request
       (finishes M2.4). Detect loops of repeated identical tool calls and failed `edit`s (`oldString` not found) and
       add a short corrective hint for the next step.
       *Check:* steps per solved task drop ≥ 25%.
@@ -222,7 +222,7 @@ Runs use the user's logged-in Claude Code (`bench/run-claude.sh`, which counts a
       (check the model IDs at run time; the script currently has opus-4-6 and sonnet-4-6). 3 repeats.
 - [ ] M8.2 quality score beyond pass/fail: hidden checks, tests not weakened, diff size, and a blind
       review of the diffs (reviewer does not know which agent produced them). The same rubric applies to every agent.
-- [ ] M8.3 local quality levers (each one also measured for time cost):
+- [~] M8.3 local quality levers *(code: `router.testRepair`, `router.planFirst`)* (each one also measured for time cost):
       test-driven repair (after an edit, failing test output goes back to the model with thinking on);
       plan first (one planning step with full thinking, then execution); retrieval at the start (M2.4);
       repository LoRA from reviewed examples (M5.4, only with a significant gain).
@@ -243,16 +243,16 @@ Budget: 24 GB total. macOS + apps ≈ 12 GB, so ≈ 10–12 GB is left for model
 | image (mflux, 4-bit) | ≈ 8–10 GB | queued; runs when the coder is idle or unloaded |
 | video (e.g. LTX-Video / Wan small) | ≈ 8–16 GB | queued; background only; coder unloaded first |
 
-- [ ] M9.1 **cap coder memory growth** (8 → 17 GB): find the cause (MLX prompt cache vs KV at
+- [~] M9.1 **cap coder memory growth** *(code done 11-04: `maxResidentGiB` + idle recycle + learned growth reservation; `bench/tools/growth.mjs`; static look at Ollama 0.40.11: MLX runner keeps KV prefix snapshots and calls mlx_set_cache_limit internally, but exposes no env knob → the idle recycle is the fix; passive sampling of the running baseline: 9.0 → 11.4 → **16.7 GB** during A–F)* (8 → 17 GB): find the cause (MLX prompt cache vs KV at
       32k), then fix it with a context bucket, a periodic reload when the coder is idle, or runner options. *Check:* steady-state
       resident size ≤ 10 GB through task F, pass rate unchanged.
-- [ ] M9.2 calibrate real peak memory for STT, TTS, image (`jobs.ts` already measures peak RSS).
-- [ ] M9.3 add a `video` job endpoint (same job adapter; background priority; preemptible queue).
-- [ ] M9.4 mixed-load scenario S3: coder runs a task while STT/TTS requests arrive and an
+- [~] M9.2 calibrate *(code: persisted `job-calibration.json`, max(RSS, available-memory drop); voice: mlx-whisper small + Kokoro-82M already in HF cache, runners resolved via uv)* real peak memory for STT, TTS, image (`jobs.ts` already measures peak RSS).
+- [~] M9.3 add a `video` job endpoint *(code: `/v1/videos`, `deferrable` priority, ballast stand-in `bench/tools/ballast.mjs`)* (same job adapter; background priority; preemptible queue).
+- [~] M9.4 mixed-load scenario S3 *(script `bench/load/s3.ts`, config `examples/pitcrew.multimodel.json`)*: coder runs a task while STT/TTS requests arrive and an
       image/video job is queued. *Check:* pressure never "critical", app swap-out rate under the
       thrash threshold, coder pass rate and time within the run-to-run spread, and video finishes after the coder
       goes idle.
-- [ ] M9.5 dashboard: who is loaded, who is queued and why, memory headroom.
+- [~] M9.5 dashboard *(why-resident column, growth/cap, job peaks, responsiveness)*: who is loaded, who is queued and why, memory headroom.
 
 **Order of work:** M7.0 (instrument) → M9.1 (memory cap, helps all three goals) → M7.1 harder
 tasks → M7.2 fair baseline + M8.1 Claude runs on the same tasks → speed levers (M7.3–7.5) and quality
@@ -317,3 +317,5 @@ Local commits per milestone on branch `breakthrough`; never pushed.
 - 11-03 Q&A: breakthrough axis = throughput, local-only, Ollama+qwen3.5 fixed, harder in-repo tasks → M7 plan written
 - 11-03 goals set by user: (1) quality comparable to Claude 4.5/4.6/4.7, (2) faster than plain OpenCode+Ollama, (3) coding+voice+image/video models without eating RAM → Goals table, M8, M9 added; observed coder at 17 GB, swap 36.8/37.9 GB
 - 11-04 Phase 0: git init, initial commit on `main`, branch `breakthrough`. M10.1–M10.5 implemented (55/55 tests). Live probe: Ollama.app serves 1 request per model at a time. Found `bench/run-all.sh` (previous session) still running agent repeat 3; a gateway smoke test at 11:09 briefly evicted its coder once (r3 task A/B timing slightly affected) → foreign-eviction bug fixed. Load runs wait until it finishes.
+- 11-04 code-only work while the old run finished: M7.0 telemetry, M9.1 cap, levers (M7.3–7.5, M8.3), M9.2–9.5, fair-baseline profile, run-claude.sh (Opus 4.5/4.6/4.7 + probe), OpenCode issue draft (`docs/opencode-issue.md`, not filed). 72/72 tests. Captured OpenCode's tool-result/error formats with `bench/tools/script-server.mjs` (no model). Note: `qwen3.5:9b` carries `draft_num_predict 3` in Ollama 0.40 — speculative/MTP decoding may exist now; not explored (out of scope for M7).
+- 11-04 ⚠ the previous session's `bench/run-all.sh` could not be stopped from this session (permission), so its final step `m4-modeC-qwen35-9b-r3` runs on the **breakthrough** gateway code (fast lane, warm helper, telemetry) — not comparable with M4 r1/r2; treat it as an extra 'Pit Crew today' A–F data point.
