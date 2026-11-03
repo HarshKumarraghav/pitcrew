@@ -22,14 +22,16 @@ for (const line of log.split("\n")) {
     start = undefined;
   }
 }
-const dirs = process.argv.slice(2).length ? process.argv.slice(2) : readdirSync(RESULTS).map((d) => join(RESULTS, d));
+const FORCE = process.argv.includes("--force");
+const dirArgs = process.argv.slice(2).filter((a) => a !== "--force");
+const dirs = dirArgs.length ? dirArgs : readdirSync(RESULTS).map((d) => join(RESULTS, d));
 let marked = 0;
 for (const dir of dirs) {
   if (!existsSync(dir) || !statSync(dir).isDirectory()) continue;
   for (const f of readdirSync(dir).filter((x) => /^[A-Z]\.json$/.test(x))) {
     const p = join(dir, f);
     const r = JSON.parse(readFileSync(p, "utf8"));
-    if (!r.startedAtMs || r.sleptBy === "clock") continue; // measured by the harness itself
+    if (!r.startedAtMs || (r.sleptBy && !FORCE)) continue; // already checked (unless --force)
     const slept = sleeps.reduce((a, [s, e]) => a + Math.max(0, Math.min(e, r.endedAtMs) - Math.max(s, r.startedAtMs)), 0) / 1000;
     r.sleptS = Math.round(slept);
     r.sleptBy = "pmset";

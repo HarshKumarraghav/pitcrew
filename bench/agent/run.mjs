@@ -9,7 +9,7 @@
 //   --repeat N   appends "-rN" to the label (results dir and /tmp dir)
 
 import { spawn, execSync } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, writeFileSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { HERE, prepareTaskDir, evaluate } from "./lib.mjs";
 import { TASKS, HARD, REGRESSION } from "./tasks.mjs";
@@ -96,8 +96,6 @@ async function runTask(key) {
     OPENCODE_DISABLE_EXTERNAL_SKILLS: "1",
   };
   const t0 = Date.now();
-  // The monotonic clock stops while the Mac sleeps; the wall clock does not. Their difference is time asleep.
-  const mono0 = performance.now();
   let firstOutputAt = null;
   const events = [];
   let buf = "";
@@ -154,7 +152,6 @@ async function runTask(key) {
   clearInterval(sampler);
   samples.push(memSample());
   const wallS = (t1 - t0) / 1000;
-  const sleptS = Math.max(0, Math.round(wallS - (performance.now() - mono0) / 1000));
 
   // Extract agent text + tool stats from the event stream.
   const cc = AGENT === "claude" ? claudeStats(events) : null;
@@ -193,10 +190,6 @@ async function runTask(key) {
     timedOut,
     exitCode,
     wallS,
-    // A run during which the machine slept (lid closed, idle sleep) measures nothing: excluded from tables.
-    sleptS,
-    sleptBy: "clock",
-    invalid: sleptS > 5 ? `machine slept ${sleptS} s` : undefined,
     startedAt: new Date(t0).toISOString(),
     endedAt: new Date(t1).toISOString(),
     startedAtMs: t0,
@@ -233,6 +226,14 @@ async function runTask(key) {
   mkdirSync(outDir, { recursive: true });
   writeFileSync(join(outDir, `${key}.json`), JSON.stringify(result, null, 2));
   writeFileSync(join(outDir, `${key}.events.jsonl`), events.map((e) => JSON.stringify(e)).join("\n"));
+  // A run during which the Mac slept (lid closed) measures nothing. Node's clock keeps counting
+  // through sleep on this machine, so the power log is the source of truth.
+  try {
+    execSync(`node ${JSON.stringify(join(HERE, "..", "tools", "mark-slept.mjs"))} --force ${JSON.stringify(outDir)}`, { stdio: "ignore" });
+    Object.assign(result, JSON.parse(readFileSync(join(outDir, `${key}.json`), "utf8")));
+  } catch {
+    // pmset unavailable (non-macOS): no sleep check
+  }
   return result;
 }
 
