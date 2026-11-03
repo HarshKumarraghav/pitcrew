@@ -56,7 +56,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     const cfg = run.replace(/-r\d+$/, "");
     for (const f of readdirSync(join(RESULTS, run)).filter((x) => /^[A-Z]\.json$/.test(x))) {
       const t = JSON.parse(readFileSync(join(RESULTS, run, f), "utf8"));
-      if (!t.diff) continue; // runs before the M7.1 harness have no diff record
+      if (!t.diff || t.invalid) continue; // pre-M7.1 runs have no diff record; slept runs are invalid
       const s = score(t, refs[t.task]);
       if (!byCfg.has(cfg)) byCfg.set(cfg, []);
       byCfg.get(cfg).push({ task: t.task, success: t.success, ...s });

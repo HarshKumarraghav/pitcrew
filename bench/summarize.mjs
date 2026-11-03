@@ -42,6 +42,7 @@ const runDirs = existsSync(AGENT)
   : [];
 /** config → [{ run, tasks: { A: result, ... } }] */
 const configs = new Map();
+const invalidRuns = [];
 const taskNames = new Map();
 for (const run of runDirs) {
   const cfg = run.replace(/-r\d+$/, "");
@@ -50,7 +51,13 @@ for (const run of runDirs) {
     const m = TASK_FILE.exec(f);
     if (!m) continue;
     try {
-      tasks[m[1]] = JSON.parse(readFileSync(join(AGENT, run, f), "utf8"));
+      const t = JSON.parse(readFileSync(join(AGENT, run, f), "utf8"));
+      // Runs during which the Mac slept measure nothing (bench/tools/mark-slept.mjs, run.mjs sleptS).
+      if (t.invalid) {
+        invalidRuns.push(`${run}/${m[1]} (${t.invalid})`);
+        continue;
+      }
+      tasks[m[1]] = t;
       if (!taskNames.has(m[1])) taskNames.set(m[1], tasks[m[1]].name);
     } catch {
       /* partial write — ignore */
@@ -192,6 +199,7 @@ function timeBudgetSection(configs) {
 const budget = timeBudgetSection(configs);
 if (budget.length) console.log(`\n### Time budget per task\n\n${budget.join("\n")}`);
 
+if (invalidRuns.length) console.log(`\nExcluded ${invalidRuns.length} invalid runs (machine asleep): ${invalidRuns.slice(0, 12).join(", ")}${invalidRuns.length > 12 ? ", …" : ""}`);
 console.log(`\nTasks: ${TASKS.map((k) => `${k} ${taskNames.get(k) ?? ""}`.trim()).join(" · ")}.`);
 
 // ---------------------------------------------------------------------------------------------

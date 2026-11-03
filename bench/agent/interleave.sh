@@ -7,6 +7,9 @@
 #   configs: space-separated; "baseline" = fair baseline, anything else = bench/configs/<name>.json
 #   e.g. bench/agent/interleave.sh "G H I" "baseline today" 1 1
 set -uo pipefail
+# Keep the Mac awake for the whole run (idle/system sleep). This cannot stop clamshell sleep:
+# with the lid closed and no external display macOS sleeps anyway, and runs are marked invalid.
+if [ -z "${PITCREW_CAFFEINATED:-}" ]; then export PITCREW_CAFFEINATED=1; exec caffeinate -ims "$0" "$@"; fi
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"; cd "$ROOT"
 TASKS="$1"; CONFIGS="$2"; FROM="$3"; TO="$4"
 STATE="bench/agent/results/machine-state.log"

@@ -96,6 +96,8 @@ async function runTask(key) {
     OPENCODE_DISABLE_EXTERNAL_SKILLS: "1",
   };
   const t0 = Date.now();
+  // The monotonic clock stops while the Mac sleeps; the wall clock does not. Their difference is time asleep.
+  const mono0 = performance.now();
   let firstOutputAt = null;
   const events = [];
   let buf = "";
@@ -152,6 +154,7 @@ async function runTask(key) {
   clearInterval(sampler);
   samples.push(memSample());
   const wallS = (t1 - t0) / 1000;
+  const sleptS = Math.max(0, Math.round(wallS - (performance.now() - mono0) / 1000));
 
   // Extract agent text + tool stats from the event stream.
   const cc = AGENT === "claude" ? claudeStats(events) : null;
@@ -190,6 +193,10 @@ async function runTask(key) {
     timedOut,
     exitCode,
     wallS,
+    // A run during which the machine slept (lid closed, idle sleep) measures nothing: excluded from tables.
+    sleptS,
+    sleptBy: "clock",
+    invalid: sleptS > 5 ? `machine slept ${sleptS} s` : undefined,
     startedAt: new Date(t0).toISOString(),
     endedAt: new Date(t1).toISOString(),
     startedAtMs: t0,
@@ -232,6 +239,6 @@ async function runTask(key) {
 for (const key of TESTS) {
   const r = await runTask(key);
   console.log(
-    `[${LABEL}] ${key} ${r.name}: ${r.success ? "PASS" : `FAIL (${r.failedChecks.join(",")})`} | ${r.wallS.toFixed(0)}s | ttfo ${r.timeToFirstOutputS ?? "-"}s | tools ${r.toolCalls} (err ${r.toolErrors}) | verify ${r.verify ? `${r.verify.pass}/${r.verify.pass + r.verify.fail}` : "-"} | suite ${r.suiteAfter.pass}/${r.suiteAfter.pass + r.suiteAfter.fail} | minFree ${r.mem.minFreePct}% swap ${r.mem.startSwapMB}->${r.mem.maxSwapMB}MB${r.timedOut ? " | TIMEOUT" : ""}`,
+    `[${LABEL}] ${key} ${r.name}: ${r.success ? "PASS" : `FAIL (${r.failedChecks.join(",")})`} | ${r.wallS.toFixed(0)}s | ttfo ${r.timeToFirstOutputS ?? "-"}s | tools ${r.toolCalls} (err ${r.toolErrors}) | verify ${r.verify ? `${r.verify.pass}/${r.verify.pass + r.verify.fail}` : "-"} | suite ${r.suiteAfter.pass}/${r.suiteAfter.pass + r.suiteAfter.fail} | minFree ${r.mem.minFreePct}% swap ${r.mem.startSwapMB}->${r.mem.maxSwapMB}MB${r.timedOut ? " | TIMEOUT" : ""}${r.invalid ? ` | INVALID: ${r.invalid}` : ""}`,
   );
 }
