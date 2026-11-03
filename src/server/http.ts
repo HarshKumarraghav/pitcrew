@@ -11,6 +11,7 @@ import { MemoryMonitor } from "../system/memory.ts";
 import { Metrics } from "./metrics.ts";
 import { chooseContext, promptChars, requestedOutput, TokenCalibrator } from "./context.ts";
 import { route } from "./router.ts";
+import { applyLevers, classifyStep } from "./levers.ts";
 import { StreamTap, RequestLog, derive, requestKind, sessionKey, tailShape, type RequestRecord } from "./telemetry.ts";
 
 const GiB = 1024 ** 3;
@@ -87,6 +88,8 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
   /** base model → currently loaded derived variant. */
   const loadedVariant = new Map<string, string>();
   const jobPeak = new Map<string, number>();
+  /** Stable per-session system block (retrieval map); see levers.ts. */
+  const leverBlocks = new Map<string, string>();
   const reqLog = cfg.telemetry.enabled ? new RequestLog(cfg.telemetry.path ?? join(cfg.stateDir, "requests.jsonl")) : undefined;
 
   const memView = (): MemoryView | undefined => {
@@ -219,11 +222,13 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
     }
     let requested = String(body.model ?? "");
     if (!requested) throw new HttpError(400, "model is required");
-    const chars = promptChars(body);
+    let chars = promptChars(body);
     // Telemetry facts are taken from the request as the client sent it (before any router patch).
     const reqKind = requestKind(body, chars, cfg.router.helperMaxPromptChars);
     const session = sessionKey(body);
     const tail = tailShape(body);
+    let step = reqKind === "agent" ? classifyStep(body).step : undefined;
+    let levers: string[] = [];
     let routeInfo: string | undefined;
     if (requested === cfg.router.name && kind !== "embed") {
       const lightFits = cfg.router.mode === "C" && cfg.router.light ? await canHost(cfg.router.light) : false;
@@ -231,6 +236,14 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
       requested = d.alias;
       Object.assign(body, d.patch);
       routeInfo = `${d.role}->${d.alias} (${d.why.replace(/→/g, "->")})`;
+      if (d.role === "agent") {
+        const lev = applyLevers(body, cfg.router, { session, blocks: leverBlocks });
+        step = lev.step.step;
+        levers = lev.applied;
+        // The injected block and hints change the prompt size, so the window is chosen from the new size.
+        if (levers.length) chars = promptChars(body);
+        if (levers.length) routeInfo += ` [${step}: ${levers.join(",")}]`;
+      }
       metrics.inc("pitcrew_routed_total", { role: d.role, alias: d.alias }, 1, "Router decisions");
     }
     const r = await registry.resolve(requested);
@@ -330,7 +343,9 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
           base: r.base,
           variant,
           kind: reqKind,
-          step: routeInfo?.split(" ")[0],
+          route: routeInfo?.split(" ")[0],
+          step,
+          levers,
           session,
           priority,
           ctx: lease.ctx,

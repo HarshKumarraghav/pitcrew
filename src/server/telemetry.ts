@@ -212,7 +212,11 @@ export interface RequestRecord {
   base: string;
   variant: string;
   kind: RequestKind;
+  /** Router decision, e.g. "agent->coder". */
+  route?: string;
+  /** Step class of an agent turn (levers.ts), logged whether or not levers are on. */
   step?: string;
+  levers?: string[];
   session?: string;
   priority: string;
   ctx: number;

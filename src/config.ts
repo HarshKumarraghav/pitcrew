@@ -64,6 +64,21 @@ export interface RouterConfig {
   helperMaxTokens: number;
   /** Send reasoning_effort "none" on helper requests (Ollama ≥ 0.12 honours it on /v1). */
   helperNoThinking: boolean;
+  /** M7.3: thinking budget per agent step (after a successful read-only tool → cheaper effort). */
+  reasoningBudget: {
+    enabled: boolean;
+    afterRead: "low" | "none";
+    /** Optional max_tokens cap per step class (e.g. { "after-read": 2048 }). */
+    maxTokens: Partial<Record<"first" | "after-read" | "after-edit" | "after-test-fail" | "after-error" | "repeat" | "after-other", number>>;
+  };
+  /** M7.5: retrieved repo map appended to the system prompt, identical on every request of a session. */
+  injectContext: { enabled: boolean; k: number; maxChars: number };
+  /** M7.5: hints after repeated identical tool calls (3×) and failed edits (with the current file excerpt). */
+  loopHints: boolean;
+  /** M8.3: after failing test output, a "fix the code, not the tests" hint. */
+  testRepair: boolean;
+  /** M8.3: ask for a short plan before the first tool call (in the stable system block). */
+  planFirst: boolean;
 }
 
 export interface Config {
@@ -161,7 +176,20 @@ export const DEFAULTS: Config = {
     charsPerToken: 3.2,
   },
   models: {},
-  router: { name: "auto", mode: "C", coder: "coder", light: "small", helperMaxPromptChars: 8000, helperMaxTokens: 512, helperNoThinking: true },
+  router: {
+    name: "auto",
+    mode: "C",
+    coder: "coder",
+    light: "small",
+    helperMaxPromptChars: 8000,
+    helperMaxTokens: 512,
+    helperNoThinking: true,
+    reasoningBudget: { enabled: false, afterRead: "low", maxTokens: {} },
+    injectContext: { enabled: false, k: 6, maxChars: 3000 },
+    loopHints: false,
+    testRepair: false,
+    planFirst: false,
+  },
   telemetry: { enabled: true, coldPrefillTokPerS: 584 },
   allowUndeclared: true,
   stateDir: join(homedir(), ".pitcrew"),

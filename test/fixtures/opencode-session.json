@@ -1,0 +1,214 @@
+{
+ "note": "Captured from OpenCode 1.18.35 with bench/tools/script-server.mjs (scripted tool calls; no model). System prompt trimmed, long tool outputs cut to 1500 chars.",
+ "model": "script",
+ "max_tokens": 8192,
+ "messages": [
+  {
+   "role": "system",
+   "content": "You are opencode, an interactive CLI tool that helps users with software engineering tasks.\n(trimmed)\nHere is some useful information about the environment you are running in:\n<env>\n  Working directory: /private/tmp/pc-script/repo\n  Workspace root folder: /private/tmp/pc-script/repo\n  Is directory a git repo: yes\n</env>"
+  },
+  {
+   "role": "user",
+   "content": "\"Fix the failing tests\""
+  },
+  {
+   "role": "assistant",
+   "content": "",
+   "tool_calls": [
+    {
+     "id": "call_1",
+     "type": "function",
+     "function": {
+      "name": "read",
+      "arguments": "{\"filePath\":\"/private/tmp/pc-script/repo/src/server.ts\"}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_1",
+   "content": "<path>/private/tmp/pc-script/repo/src/server.ts</path>\n<type>file</type>\n<content>\n1: import { createServer } from \"node:http\";\n2: import { Router } from \"./routes/router.ts\";\n3: import { registerTaskRoutes } from \"./routes/tasks.ts\";\n4: import { TaskStore } from \"./store/taskStore.ts\";\n5: \n6: export function buildApp(store = new TaskStore()) {\n7:   const router = new Router();\n8:   registerTaskRoutes(router, store);\n9:   return { router, store };\n10: }\n11: \n12: if (import.meta.url === `file://${process.argv[1]}`) {\n13:   const { router } = buildApp();\n14:   const port = Number(process.env.PORT ?? 3000);\n15:   createServer(router.listener()).listen(port, \"127.0.0.1\", () => {\n16:     console.log(`taskboard listening on http://127.0.0.1:${port}`);\n17:   });\n18: }\n\n(End of file - total 18 lines)\n</content>"
+  },
+  {
+   "role": "assistant",
+   "content": "",
+   "tool_calls": [
+    {
+     "id": "call_2",
+     "type": "function",
+     "function": {
+      "name": "read",
+      "arguments": "{\"filePath\":\"/private/tmp/pc-script/repo/src/nope.ts\"}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_2",
+   "content": "File not found: /private/tmp/pc-script/repo/src/nope.ts"
+  },
+  {
+   "role": "assistant",
+   "content": "",
+   "tool_calls": [
+    {
+     "id": "call_3",
+     "type": "function",
+     "function": {
+      "name": "edit",
+      "arguments": "{\"filePath\":\"/private/tmp/pc-script/repo/src/utils/slugify.ts\",\"oldString\":\"THIS DOES NOT EXIST\",\"newString\":\"x\"}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_3",
+   "content": "Could not find oldString in the file. It must match exactly, including whitespace, indentation, and line endings."
+  },
+  {
+   "role": "assistant",
+   "content": "",
+   "tool_calls": [
+    {
+     "id": "call_4",
+     "type": "function",
+     "function": {
+      "name": "bash",
+      "arguments": "{\"command\":\"npm test\",\"description\":\"Run tests\"}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_4",
+   "content": "\n> taskboard@0.3.0 test\n> node --experimental-strip-types --no-warnings --test 'tests/**/*.test.ts'\n\nTAP version 13\n# Subtest: lowercases and hyphenates\nok 1 - lowercases and hyphenates\n  ---\n  duration_ms: 0.477833\n  type: 'test'\n  ...\n# Subtest: strips punctuation\nok 2 - strips punctuation\n  ---\n  duration_ms: 0.069458\n  type: 'test'\n  ...\n# Subtest: collapses repeated whitespace into a single hyphen\nnot ok 3 - collapses repeated whitespace into a single hyphen\n  ---\n  duration_ms: 0.685875\n  type: 'test'\n  location: '/private/tmp/pc-script/repo/tests/slugify.test.ts:13:1'\n  failureType: 'testCodeFailure'\n  error: |-\n    Expected values to be strictly equal:\n    + actual - expected\n    \n    + 'fix---the--bug'\n    - 'fix-the-bug'\n           ^\n    \n  code: 'ERR_ASSERTION'\n  name: 'AssertionError'\n  expected: 'fix-the-bug'\n  actual: 'fix---the--bug'\n  operator: 'strictEqual'\n  stack: |-\n    TestContext.<anonymous> (file:///private/tmp/pc-script/repo/tests/slugify.test.ts:14:10)\n    Test.runInAsyncScope (node:async_hooks:214:14)\n    Test.run (node:internal/test_runner/test:1047:25)\n    Test.processPendingSubtests (node:internal/test_runner/test:744:18)\n    Test.postRun (node:internal/test_runner/test:1173:19)\n    Test.run (node:internal/test_runner/test:1101:12)\n    async Test.processPendingSubtests (node:internal/test_runner/test:744:7)\n  ...\n# Subtest: does not leave leading or trailing hyphens\nnot ok 4 - does not leave leading or trailing hyphens\n  ---\n  duration_ms: 0.13687"
+  },
+  {
+   "role": "assistant",
+   "content": "",
+   "tool_calls": [
+    {
+     "id": "call_5",
+     "type": "function",
+     "function": {
+      "name": "glob",
+      "arguments": "{\"pattern\":\"src/**/*.ts\"}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_5",
+   "content": "/private/tmp/pc-script/repo/src/store/taskStore.ts\n/private/tmp/pc-script/repo/src/types/task.ts\n/private/tmp/pc-script/repo/src/routes/tasks.ts\n/private/tmp/pc-script/repo/src/routes/router.ts\n/private/tmp/pc-script/repo/src/server.ts\n/private/tmp/pc-script/repo/src/api/client.ts\n/private/tmp/pc-script/repo/src/utils/paginate.ts\n/private/tmp/pc-script/repo/src/utils/slugify.ts"
+  },
+  {
+   "role": "assistant",
+   "content": "",
+   "tool_calls": [
+    {
+     "id": "call_6",
+     "type": "function",
+     "function": {
+      "name": "glob",
+      "arguments": "{\"pattern\":\"src/**/*.ts\"}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_6",
+   "content": "/private/tmp/pc-script/repo/src/store/taskStore.ts\n/private/tmp/pc-script/repo/src/routes/tasks.ts\n/private/tmp/pc-script/repo/src/routes/router.ts\n/private/tmp/pc-script/repo/src/server.ts\n/private/tmp/pc-script/repo/src/api/client.ts\n/private/tmp/pc-script/repo/src/utils/paginate.ts\n/private/tmp/pc-script/repo/src/utils/slugify.ts\n/private/tmp/pc-script/repo/src/types/task.ts"
+  },
+  {
+   "role": "assistant",
+   "content": "",
+   "tool_calls": [
+    {
+     "id": "call_7",
+     "type": "function",
+     "function": {
+      "name": "grep",
+      "arguments": "{\"pattern\":\"slugify\"}"
+     }
+    }
+   ]
+  },
+  {
+   "role": "tool",
+   "tool_call_id": "call_7",
+   "content": "Found 8 matches\n/private/tmp/pc-script/repo/src/store/taskStore.ts:\n  Line 2: import { slugify } from \"../utils/slugify.ts\";\n\n  Line 21:       slug: slugify(input.title),\n\n\n/private/tmp/pc-script/repo/tests/slugify.test.ts:\n  Line 3: import { slugify } from \"../src/utils/slugify.ts\";\n\n  Line 6:   assert.equal(slugify(\"Write Docs\"), \"write-docs\");\n\n  Line 10:   assert.equal(slugify(\"Ship it!\"), \"ship-it\");\n\n  Line 14:   assert.equal(slugify(\"Fix   the  Bug\"), \"fix-the-bug\");\n\n  Line 18:   assert.equal(slugify(\"  -- Hello World --  \"), \"hello-world\");\n\n\n/private/tmp/pc-script/repo/src/utils/slugify.ts:\n  Line 2: export function slugify(title: string): string {\n"
+  }
+ ],
+ "tools": [
+  {
+   "type": "function",
+   "function": {
+    "name": "bash",
+    "parameters": {
+     "type": "object"
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "edit",
+    "parameters": {
+     "type": "object"
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "glob",
+    "parameters": {
+     "type": "object"
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "grep",
+    "parameters": {
+     "type": "object"
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "read",
+    "parameters": {
+     "type": "object"
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "todowrite",
+    "parameters": {
+     "type": "object"
+    }
+   }
+  },
+  {
+   "type": "function",
+   "function": {
+    "name": "write",
+    "parameters": {
+     "type": "object"
+    }
+   }
+  }
+ ],
+ "stream": true
+}
