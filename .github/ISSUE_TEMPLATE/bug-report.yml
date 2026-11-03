@@ -1,0 +1,48 @@
+name: Bug report
+description: Something in Pit Crew does not work as documented.
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: What you did, what you expected, and what happened instead.
+    validations:
+      required: true
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. pitcrew serve --config ...
+        2. send ...
+        3. see ...
+    validations:
+      required: true
+  - type: textarea
+    id: audit
+    attributes:
+      label: "`pitcrew audit` output"
+      description: Run `npx pitcrew-ai audit` (or `npm run dev -- audit`) and paste the output. It lists memory, swap, runtimes and model names; it contains no prompts or file contents.
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: log
+    attributes:
+      label: Gateway log or dashboard event log
+      description: The lines around the problem from the `pitcrew serve` terminal or the dashboard's radio panel (`GET /governor/state` → `events`).
+      render: text
+  - type: textarea
+    id: config
+    attributes:
+      label: Config
+      description: Your `pitcrew.config.json` (or "defaults").
+      render: json
+  - type: input
+    id: versions
+    attributes:
+      label: Versions
+      placeholder: "pitcrew 0.1.0 · Ollama 0.40.x · OpenCode 1.18.x · Node 22.x"
+    validations:
+      required: true

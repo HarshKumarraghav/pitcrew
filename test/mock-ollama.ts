@@ -10,7 +10,7 @@ export interface MockModel {
 }
 
 /** A fake Ollama that tracks loaded models and streams OpenAI-style responses. */
-export async function startMockOllama(models: MockModel[], opts: { tokenDelayMs?: number; parallel?: number } = {}) {
+export async function startMockOllama(models: MockModel[], opts: { tokenDelayMs?: number; parallel?: number; loadDelayMs?: number } = {}) {
   // Requests the mock serves at once per model (OLLAMA_NUM_PARALLEL); the rest wait in line.
   let active = 0;
   const waiting: (() => void)[] = [];
@@ -78,7 +78,10 @@ export async function startMockOllama(models: MockModel[], opts: { tokenDelayMs?
     }
     if (url === "/api/generate" && !body.prompt) {
       if (body.keep_alive === 0) loaded.delete(body.model);
-      else loaded.set(body.model, sizeOf(body.model));
+      else {
+        if (!loaded.has(body.model) && opts.loadDelayMs) await new Promise((r) => setTimeout(r, opts.loadDelayMs));
+        loaded.set(body.model, sizeOf(body.model));
+      }
       return json(200, { done: true, load_duration: 5_000_000 });
     }
     if (url === "/api/generate" && body.prompt) {

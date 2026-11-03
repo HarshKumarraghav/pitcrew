@@ -1,0 +1,42 @@
+name: Hardware report
+description: Share how Pit Crew behaves on your machine (any Mac or Linux box helps).
+labels: ["hardware report"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks! Reports from machines other than the 24 GB M5 used so far tell us whether the memory
+        policy and defaults hold up. Nothing here needs to be a success story.
+  - type: input
+    id: machine
+    attributes:
+      label: Machine
+      placeholder: "MacBook Air M2, 16 GB · or · Ryzen 7 7840U, 32 GB, Ubuntu 24.04"
+    validations:
+      required: true
+  - type: textarea
+    id: audit
+    attributes:
+      label: "`pitcrew audit` output"
+      render: text
+    validations:
+      required: true
+  - type: textarea
+    id: garage
+    attributes:
+      label: "`pitcrew garage` output"
+      render: text
+  - type: textarea
+    id: workload
+    attributes:
+      label: Background load and models
+      description: Which apps were open, which models and context sizes you used, and the config if it is not the example one.
+    validations:
+      required: true
+  - type: textarea
+    id: results
+    attributes:
+      label: What you observed
+      description: Load times, swap, evictions, queueing, agent-suite results (`bench/agent`) if you ran it. Label measured vs estimated numbers.
+    validations:
+      required: true

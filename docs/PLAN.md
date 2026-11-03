@@ -266,6 +266,22 @@ Budget: 24 GB total. macOS + apps ≈ 12 GB, so ≈ 10–12 GB is left for model
 tasks → M7.2 fair baseline + M8.1 Claude runs on the same tasks → speed levers (M7.3–7.5) and quality
 levers (M8.3), each judged on all three metrics → M9.2–9.5 → M7.6/M8.4 write-up.
 
+## Launch — public repo, npm, demo (parallel track, 2026-11-04)
+
+> LAUNCH NEXT → user: `gh auth login` + `npm login`. Then, each only after the user says go: push → CI + Pages green → create the 5 good first issues (drafts in `.launch/good-first-issues.md`, untracked) → `gh repo edit` (description, homepage, topics, Discussions) → tag + release v0.1.0 → `npm publish`. User uploads `docs/img/social-preview.png` in Settings → Social preview.
+
+- [x] L1 demo recording: `scripts/demo/record.mjs` (mock backend, simulated 24 GB Mac; `--ollama` for real) → `site/trace.json`; `site/replay.js` replays it into the unmodified dashboard; `scripts/demo/build-site.mjs` builds `site/index.html` from `src/server/gui.html` — check: replay animates in headless Chrome
+- [x] L2 `docs/img/demo.gif` (`npm run demo:gif`, 900 px, 0.74 MB) and `docs/img/social-preview.png` (1280×640, `scripts/demo/social-card.html`)
+- [x] L3 README top (pitch, badges, GIF, `npx pitcrew-ai serve`, live demo), quick start via npx, clone URL fixed
+- [x] L4 package.json: repository/homepage/bugs, `prepack` builds, no source maps — check: tarball installs in an empty dir, `pitcrew --help` and `audit` run
+- [x] L5 CONTRIBUTING (project map, mock backend, PR flow), issue forms (bug, hardware report, feature), PR template, CHANGELOG
+- [x] L6 CI: `package` job (install tarball, run it), `secrets` job (gitleaks 8.30.1, full history); `.gitleaks.toml` allows only the two fake keys in `test/learn.test.ts` — check: gitleaks 0 findings on 27 commits
+- [ ] L7 push; CI + Pages green (`gh run watch`); enable Pages (source: Actions)
+- [ ] L8 repo settings: description, homepage, topics, Discussions on; labels `hardware report`
+- [ ] L9 5 good first issues created with the label
+- [ ] L10 tag + GitHub release v0.1.0 (notes = CHANGELOG section); `npm publish`; `npx pitcrew-ai --help` works
+- [ ] L11 social preview uploaded (user) and visible
+
 ## Execution order (breakthrough branch, plan of 11-04)
 
 Local commits per milestone on branch `breakthrough`; never pushed.
@@ -332,3 +348,4 @@ Local commits per milestone on branch `breakthrough`; never pushed.
 - 11-04 M9.2 voice verified with cached weights: Kokoro-82M TTS 2.9 s, 0.93 GB peak RSS; whisper-small STT 3.7 s, 0.99 GB; exact transcript. Downloads: a few Python wheels (torch, spacy, pydantic-core) and en_core_web_sm (12 MB); no model weights.
 - 11-04 `pitcrew-cap-r1` (A–F, cap 10 GB): 3/6 — **invalid as a pass-rate measurement**: Docker VM 4.5 GB started ~15:30, swap 31.6/32 GB, 'memory critical' for minutes; each failed task had one request at ~0.1 tok/s for 900+ s. Recycle fired once (11.1→7.1 GB in 3.5 s). The gateway kept its 11 GB coder loaded after the run (keep_alive −1) → run scripts now unload at the end; thrash relief now also sheds pinned helpers (as documented). Switched to interleaved runs (`bench/agent/interleave.sh`) so configurations share machine conditions.
 - 11-04 **Correction:** the 'stalls' blamed on Docker/thrash were the Mac in **clamshell sleep** (lid closed 18:22 → next morning, ~45 s DarkWakes every ~15 min; `pmset -g log`). Ollama logged `took=43.8s` for a request spanning 15 min of wall time (monotonic clock stops in sleep). Repro of a 22k-token prompt, speculative decoding on vs off, 3 trials each: 0/6 hung. 46 results overlapped sleep (all of stage 1, most of pitcrew-cap-r1, 25 of the other session's Claude runs) → marked invalid (`bench/tools/mark-slept.mjs`) and excluded; run.mjs now detects sleep itself (wall vs monotonic). Load tests, growth replay and voice tests ran while awake (valid).
+- 11-04 Launch track L1–L6 (local only, nothing pushed): demo recorded on the mock backend because stage 1 was using Ollama; Chrome/ffmpeg/tests ran at background QoS (`taskpolicy -b`) during stage 1 run K.

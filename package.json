@@ -1,17 +1,24 @@
 {
   "name": "pitcrew-ai",
   "version": "0.1.0",
-  "description": "Pit Crew: OpenCode drives. Your local models are the crew. An OpenCode-first, resource-aware, multi-model local coding platform for unified-memory machines: memory-aware model scheduling, product intelligence and retrieval, benchmarks, and optional LoRA tuning. No swap, no cloud, no crashes.",
+  "description": "Run several local LLMs on one Mac without swapping. A memory-aware, OpenAI-compatible gateway between OpenCode and Ollama: model scheduling, context sizing, routing, repo retrieval. Local only, zero runtime dependencies.",
   "type": "module",
   "license": "MIT",
+  "homepage": "https://harshkumarraghav.github.io/pitcrew/",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/HarshKumarraghav/pitcrew.git"
+  },
+  "bugs": {
+    "url": "https://github.com/HarshKumarraghav/pitcrew/issues"
+  },
   "bin": {
     "pitcrew": "dist/cli.js"
   },
   "files": [
     "dist",
     "examples",
-    "README.md",
-    "LICENSE"
+    "!dist/**/*.map"
   ],
   "engines": {
     "node": ">=22.6"
@@ -20,22 +27,31 @@
     "dev": "node --experimental-strip-types --no-warnings src/cli.ts",
     "start": "node dist/cli.js",
     "build": "tsc -p tsconfig.build.json && cp src/server/gui.html dist/server/gui.html",
+    "prepack": "npm run build",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "node --experimental-strip-types --no-warnings --test 'test/**/*.test.ts'",
     "bench:load": "node --experimental-strip-types --no-warnings bench/load/run.ts",
-    "bench:agent": "node bench/agent/run.mjs"
+    "bench:agent": "node bench/agent/run.mjs",
+    "demo:record": "node --experimental-strip-types --no-warnings scripts/demo/record.mjs",
+    "demo:site": "node scripts/demo/build-site.mjs",
+    "demo:gif": "node scripts/demo/build-site.mjs && node scripts/demo/gif.mjs"
   },
   "keywords": [
     "apple-silicon",
     "coding-agent",
+    "gateway",
     "llm",
+    "llm-inference",
     "local-llm",
+    "macos",
     "memory",
+    "memory-management",
     "ollama",
     "openai-compatible",
     "opencode",
     "pitcrew",
-    "scheduler"
+    "scheduler",
+    "self-hosted"
   ],
   "devDependencies": {
     "@types/node": "^22.10.0",

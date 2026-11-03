@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Questions and ideas
+    url: https://github.com/HarshKumarraghav/pitcrew/discussions
+    about: Setup help, model choices and open-ended ideas go to Discussions.
+  - name: Security issue
+    url: https://github.com/HarshKumarraghav/pitcrew/blob/main/SECURITY.md
+    about: Please do not open a public issue for vulnerabilities; see SECURITY.md.

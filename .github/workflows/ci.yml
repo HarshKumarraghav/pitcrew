@@ -3,6 +3,7 @@ name: ci
 on:
   push:
   pull_request:
+  workflow_dispatch:
 
 jobs:
   test:
@@ -22,3 +23,37 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: node dist/cli.js --help
+
+  # The npm tarball installs and runs on its own (what `npx pitcrew-ai` gets).
+  package:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci || npm install
+      - run: npm pack --dry-run
+      - run: npm pack --pack-destination "$RUNNER_TEMP"
+      - name: install the tarball in an empty directory and run it
+        run: |
+          mkdir "$RUNNER_TEMP/try" && cd "$RUNNER_TEMP/try"
+          npm init -y >/dev/null
+          npm install "$RUNNER_TEMP"/pitcrew-ai-*.tgz
+          npx pitcrew --help
+          test -f node_modules/pitcrew-ai/dist/server/gui.html
+
+  # Full-history secret scan. Runs the gitleaks CLI rather than gitleaks-action: on push events the
+  # action only scans the pushed commits, and this should cover every commit every time.
+  secrets:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: gitleaks
+        env:
+          GITLEAKS_VERSION: 8.30.1
+        run: |
+          curl -sSfL "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz" | tar -xz gitleaks
+          ./gitleaks git --redact --verbose --exit-code 1 .

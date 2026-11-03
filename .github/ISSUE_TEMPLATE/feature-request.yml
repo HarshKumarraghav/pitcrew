@@ -1,0 +1,30 @@
+name: Feature request
+description: Suggest an improvement or a new capability.
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem
+      description: What are you trying to do, and what gets in the way today?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposal
+      description: What should Pit Crew do? Config, CLI or API sketches are welcome.
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives you considered
+  - type: checkboxes
+    id: rules
+    attributes:
+      label: Fits the project's ground rules
+      description: See CONTRIBUTING.md. It is fine to propose something that does not; say why.
+      options:
+        - label: Works without runtime dependencies
+        - label: Keeps everything local (no outbound calls, no cloud models)

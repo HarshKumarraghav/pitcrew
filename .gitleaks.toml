@@ -1,0 +1,11 @@
+# Secret scanning (CI job `secrets`; locally: gitleaks git --redact -v .)
+[extend]
+useDefault = true
+
+# The learn pipeline's own secret scanner is tested with obviously fake credentials.
+# Only these exact strings in that file are allowed; a real key anywhere still fails.
+[[allowlists]]
+description = "fake credentials in the secret-scanner test"
+condition = "AND"
+paths = ['''^test/learn\.test\.ts$''']
+regexes = ['''^AKIAABCDEFGHIJKLMNOP$''', '''^abcd1234efgh5678$''']

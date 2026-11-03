@@ -1,11 +1,29 @@
 # Pit Crew
 
+**Run several local LLMs on one Mac without swapping.** A memory-aware gateway between
+[OpenCode](https://opencode.ai) and [Ollama](https://ollama.com).
+
+[![ci](https://github.com/HarshKumarraghav/pitcrew/actions/workflows/ci.yml/badge.svg)](https://github.com/HarshKumarraghav/pitcrew/actions/workflows/ci.yml)
+[![npm](https://img.shields.io/npm/v/pitcrew-ai)](https://www.npmjs.com/package/pitcrew-ai)
+[![license](https://img.shields.io/github/license/HarshKumarraghav/pitcrew)](LICENSE)
+[![discussions](https://img.shields.io/github/discussions/HarshKumarraghav/pitcrew)](https://github.com/HarshKumarraghav/pitcrew/discussions)
+
+![Pit Crew dashboard: a coder model loads, a title request goes to the light model, a burst queues, an idle model is evicted for background work](docs/img/demo.gif)
+
+```sh
+npx pitcrew-ai serve
+```
+
+**[Live demo →](https://harshkumarraghav.github.io/pitcrew/)** the real dashboard replaying a recorded session
+(mock backend on a simulated 24 GB Mac; [how it is recorded](scripts/demo/record.mjs)).
+`serve` needs a config with your models; see [Quick start](#quick-start).
+
 **OpenCode drives. Your local models are the crew. No swap, no cloud, no crashes.**
 
 Pit Crew turns a laptop with a modest amount of unified memory into a dependable local coding
-setup. [OpenCode](https://opencode.ai) stays your coding agent (tools, edits, approvals,
-sessions). Pit Crew sits between OpenCode and [Ollama](https://ollama.com) and decides **which
-model runs, when, with how much context, and whether your machine can afford it right now**.
+setup. OpenCode stays your coding agent (tools, edits, approvals, sessions). Pit Crew sits between
+OpenCode and Ollama and decides **which model runs, when, with how much context, and whether your
+machine can afford it right now**.
 
 ```
 OpenCode ──► Pit Crew gateway (127.0.0.1:11500, OpenAI-compatible)
@@ -47,20 +65,40 @@ Pit Crew fills that gap.
 
 ## Quick start
 
+Needs macOS on Apple Silicon (Linux works but is less tested), Node ≥ 22.6 and
+[Ollama](https://ollama.com/download) running.
+
 ```sh
-git clone <this repo> pitcrew && cd pitcrew
-npm install            # dev tools only (typescript); runtime has no dependencies
 ollama pull qwen3.5:9b && ollama pull qwen3.5:0.8b
 
-cp examples/pitcrew.config.json pitcrew.config.json   # edit aliases if you like
-npm run dev -- audit     # what does this machine have, what fits now?
-npm run dev -- serve     # gateway + dashboard on http://127.0.0.1:11500
+# a config with a coder and a light model (edit the aliases if you like)
+curl -fsSLO https://raw.githubusercontent.com/HarshKumarraghav/pitcrew/main/examples/pitcrew.config.json
 
-bin/opencode-local       # OpenCode with the local-only profile, through Pit Crew
+npx pitcrew-ai audit     # what does this machine have, what fits now?
+npx pitcrew-ai serve     # gateway + dashboard on http://127.0.0.1:11500 (reads ./pitcrew.config.json)
 ```
 
-Your global OpenCode config is not modified: `bin/opencode-local` sets `OPENCODE_CONFIG` to a
-profile that is merged on top and restricts OpenCode to the local provider.
+Point OpenCode at the gateway with the Pit Crew profile. It is merged on top of your global
+OpenCode config, which is not modified:
+
+```sh
+curl -fsSLO https://raw.githubusercontent.com/HarshKumarraghav/pitcrew/main/examples/opencode/opencode.pitcrew.json
+OPENCODE_CONFIG=opencode.pitcrew.json opencode
+```
+
+From source:
+
+```sh
+git clone https://github.com/HarshKumarraghav/pitcrew.git && cd pitcrew
+npm install              # dev tools only (typescript); runtime has no dependencies
+cp examples/pitcrew.config.json pitcrew.config.json
+npm run dev -- serve
+OPENCODE_CONFIG=examples/opencode/opencode.pitcrew.json opencode
+```
+
+`bin/opencode-local` launches OpenCode with the local-only profile and turns off OpenCode's update
+checks, model-metadata fetches and LSP downloads. Set `PITCREW_OPENCODE_PROFILE` to choose the
+profile it uses.
 
 ## Commands
 
@@ -89,6 +127,13 @@ implemented but less tested. See [docs/PLAN.md](docs/PLAN.md) for the roadmap an
 
 A local 9B model is not a frontier model. Benchmarks in this repo measure what it does on
 specific tasks; they make no claim of parity with hosted models.
+
+## Contributing
+
+Issues, hardware reports and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md),
+the [good first issues](https://github.com/HarshKumarraghav/pitcrew/labels/good%20first%20issue) and
+[Discussions](https://github.com/HarshKumarraghav/pitcrew/discussions). Security reports:
+[SECURITY.md](SECURITY.md).
 
 ## License
 

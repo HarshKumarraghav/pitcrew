@@ -5,3 +5,4 @@ bench/agent/results/
 *.log
 .DS_Store
 .pitcrew/
+site/index.html
