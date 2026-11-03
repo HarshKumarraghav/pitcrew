@@ -1,5 +1,7 @@
 import { createServer, type IncomingMessage, type ServerResponse, type Server } from "node:http";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync, existsSync, writeFileSync, mkdirSync } from "node:fs";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { isJob, type Config, type Priority } from "../config.ts";
@@ -8,6 +10,8 @@ import { runJob, type JobSpec } from "../backend/jobs.ts";
 import { Registry, ModelError, DERIVED_NS, derivedName, type Resolved } from "../models/registry.ts";
 import { Scheduler, SchedulerError, type Lease, type MemoryView } from "../scheduler/scheduler.ts";
 import { MemoryMonitor } from "../system/memory.ts";
+import { LagProbe } from "../system/lag.ts";
+import { boundaryOf, parseMultipart } from "./multipart.ts";
 import { Metrics } from "./metrics.ts";
 import { chooseContext, promptChars, requestedOutput, TokenCalibrator } from "./context.ts";
 import { route } from "./router.ts";
@@ -23,6 +27,7 @@ export interface Gateway {
   registry: Registry;
   monitor: MemoryMonitor;
   metrics: Metrics;
+  lag: LagProbe;
   /** Load and pin `warm` aliases; probes the backend's parallel slots on the first one. */
   warmUp(): Promise<void>;
   close(): Promise<void>;
@@ -87,7 +92,18 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
   const tokens = new TokenCalibrator(cfg.context.charsPerToken);
   /** base model → currently loaded derived variant. */
   const loadedVariant = new Map<string, string>();
-  const jobPeak = new Map<string, number>();
+  /** Learned peak memory per job model, persisted so the first run after a restart is not a guess. */
+  const jobCalPath = join(cfg.stateDir, "job-calibration.json");
+  type JobCal = { peakBytes: number; rssBytes: number; availDropBytes: number; runs: number; updatedAt: string };
+  const jobCal: Record<string, JobCal> = (() => {
+    try {
+      return existsSync(jobCalPath) ? (JSON.parse(readFileSync(jobCalPath, "utf8")) as Record<string, JobCal>) : {};
+    } catch {
+      return {};
+    }
+  })();
+  const jobPeak = new Map<string, number>(Object.entries(jobCal).map(([k, v]) => [k, v.peakBytes]));
+  const lag = new LagProbe();
   /** Stable per-session system block (retrieval map); see levers.ts. */
   const leverBlocks = new Map<string, string>();
   const reqLog = cfg.telemetry.enabled ? new RequestLog(cfg.telemetry.path ?? join(cfg.stateDir, "requests.jsonl")) : undefined;
@@ -129,6 +145,7 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
   metrics.gauge("pitcrew_model_committed_bytes", () => scheduler.committed(), "Memory charged to resident models (measured when known, else estimated)");
   metrics.gauge("pitcrew_queue_depth", () => scheduler.snapshot().queue.length, "Requests waiting");
   metrics.gauge("pitcrew_running", () => scheduler.snapshot().running, "Requests running");
+  metrics.gauge("pitcrew_spawn_latency_p95_ms", () => lag.summary().p95Ms, "Time to start + finish a trivial process, p95 of recent samples (measured; responsiveness)");
   scheduler.onEvent((e) => {
     if (e.type === "loaded") metrics.inc("pitcrew_model_loads_total", { model: e.key ?? "" }, 1, "Model loads");
     if (e.type === "evict") metrics.inc("pitcrew_evictions_total", { model: e.key ?? "" }, 1, "Evictions");
@@ -151,7 +168,7 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
 
   function priorityOf(req: IncomingMessage, fallback: Priority): Priority {
     const h = String(req.headers["x-pitcrew-priority"] ?? "").toLowerCase();
-    return h === "background" || h === "interactive" ? h : fallback;
+    return h === "background" || h === "interactive" || h === "deferrable" ? h : fallback;
   }
 
   async function leaseLlm(r: Resolved, ctx: number, priority: Priority, signal: AbortSignal): Promise<Lease> {
@@ -377,11 +394,20 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
     const raw = await readBody(req);
     const ct = String(req.headers["content-type"] ?? "");
     let body: Record<string, unknown> = {};
+    let upload: { name: string; data: Buffer } | undefined;
     if (ct.includes("application/json")) {
       try {
         body = JSON.parse(raw.toString("utf8") || "{}");
       } catch {
         throw new HttpError(400, "invalid JSON body");
+      }
+    } else if (ct.includes("multipart/form-data")) {
+      // OpenAI audio uploads: fields (model, language, prompt, response_format) + one file part.
+      const boundary = boundaryOf(ct);
+      if (!boundary) throw new HttpError(400, "multipart body without boundary");
+      for (const part of parseMultipart(raw, boundary)) {
+        if (part.filename !== undefined) upload = { name: part.filename || "upload.bin", data: part.data };
+        else body[part.name] = part.data.toString("utf8");
       }
     }
     const model = String(body.model ?? req.headers["x-pitcrew-model"] ?? "");
@@ -400,17 +426,30 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
       steps: body.steps as number | undefined,
       width: w || undefined,
       height: h || undefined,
+      seconds: body.seconds as number | undefined,
+      language: body.language as string | undefined,
     };
     for (const k of Object.keys(vars)) if (vars[k] === undefined) delete vars[k];
     const ac = new AbortController();
     res.on("close", () => {
       if (!res.writableFinished) ac.abort();
     });
+    if (endpoint === "transcriptions") {
+      if (!upload) throw new HttpError(400, "transcriptions need a multipart upload with a `file` part");
+      if (!spec.command.some((c) => c.includes("{file}"))) throw new HttpError(500, `models.${model}.command has no {file} placeholder`);
+    }
     const estimate = jobPeak.get(model) ?? spec.memoryGiB * GiB;
+    let uploadDir: string | undefined;
+    if (upload) {
+      uploadDir = await mkdtemp(join(tmpdir(), "pitcrew-upload-"));
+      const ext = (/\.([a-z0-9]{1,5})$/i.exec(upload.name)?.[1] ?? "bin").toLowerCase();
+      vars.file = join(uploadDir, `input.${ext}`);
+      await writeFile(vars.file, upload.data);
+    }
     const lease = await scheduler.acquire({
       key: `job:${model}`,
       kind: "job",
-      priority: priorityOf(req, spec.priority ?? "background"),
+      priority: priorityOf(req, spec.priority ?? (endpoint === "video" ? "deferrable" : "background")),
       ctx: 0,
       estimate: () => estimate,
       parallel: 1,
@@ -419,18 +458,40 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
       ops: { load: async () => undefined, unload: async () => undefined },
     });
     let ok = false;
+    // Metal allocations may not show up in RSS, so also watch how far available memory drops.
+    const availBefore = monitor.latest?.availableBytes;
+    let availMin = availBefore ?? Number.POSITIVE_INFINITY;
+    const availTimer = setInterval(() => {
+      const a = monitor.latest?.availableBytes;
+      if (a !== undefined) availMin = Math.min(availMin, a);
+    }, 250);
     try {
       const result = await runJob(spec, vars, ac.signal);
+      clearInterval(availTimer);
       ok = true;
-      if (result.peakRssBytes > 0) {
+      const drop = availBefore !== undefined && Number.isFinite(availMin) ? Math.max(0, availBefore - availMin) : 0;
+      const measured = Math.max(result.peakRssBytes, drop);
+      if (measured > 0) {
         // Keep the larger of declared and measured, so one light run cannot shrink the budget.
-        jobPeak.set(model, Math.max(result.peakRssBytes * 1.1, (jobPeak.get(model) ?? 0) * 0.8, spec.memoryGiB * GiB * 0.5));
+        const peak = Math.max(measured * 1.1, (jobPeak.get(model) ?? 0) * 0.8, spec.memoryGiB * GiB * 0.5);
+        jobPeak.set(model, peak);
+        const prev = jobCal[model];
+        jobCal[model] = { peakBytes: peak, rssBytes: Math.max(result.peakRssBytes, prev?.rssBytes ?? 0), availDropBytes: Math.max(drop, prev?.availDropBytes ?? 0), runs: (prev?.runs ?? 0) + 1, updatedAt: new Date().toISOString() };
+        try {
+          mkdirSync(cfg.stateDir, { recursive: true });
+          writeFileSync(jobCalPath, JSON.stringify(jobCal, null, 2));
+        } catch {
+          // calibration is an optimisation
+        }
       }
-      lease.release({ ok, measuredBytes: result.peakRssBytes });
+      lease.release({ ok, measuredBytes: measured });
       metrics.observe("pitcrew_job_seconds", result.ms / 1000, { model }, undefined, "Job run time (measured)");
       const headers = { "x-pitcrew-ms": String(result.ms), "x-pitcrew-peak-rss": String(result.peakRssBytes) };
       if (endpoint === "images") {
         sendJson(res, 200, { created: Math.floor(Date.now() / 1000), data: [{ b64_json: result.data.toString("base64") }] });
+      } else if (endpoint === "video") {
+        res.setHeader("x-pitcrew-ms", String(result.ms));
+        sendJson(res, 200, { created: Math.floor(Date.now() / 1000), data: [{ b64_json: result.data.toString("base64"), mime: result.ext === "mp4" ? "video/mp4" : `application/${result.ext}` }] });
       } else if (endpoint === "speech") {
         res.writeHead(200, { "content-type": result.ext === "mp3" ? "audio/mpeg" : "audio/wav", ...headers });
         res.end(result.data);
@@ -438,8 +499,11 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
         sendJson(res, 200, { text: result.data.toString("utf8").trim() });
       }
     } catch (e) {
+      clearInterval(availTimer);
       lease.release({ ok: false });
       throw e;
+    } finally {
+      if (uploadDir) await rm(uploadDir, { recursive: true, force: true });
     }
   }
 
@@ -494,6 +558,8 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
         Object.entries(cfg.models).map(([k, v]) => [k, isJob(v) ? { kind: "job", endpoint: v.endpoint, memoryGiB: v.memoryGiB } : { kind: "llm", ...v }]),
       ),
       loadedVariants: Object.fromEntries(loadedVariant),
+      jobCalibration: jobCal,
+      responsiveness: lag.summary(),
       events: scheduler.events.slice(-100),
     };
   }
@@ -581,6 +647,7 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
       if (req.method === "POST" && path === "/v1/images/generations") return await handleJob(req, res, "images");
       if (req.method === "POST" && path === "/v1/audio/speech") return await handleJob(req, res, "speech");
       if (req.method === "POST" && path === "/v1/audio/transcriptions") return await handleJob(req, res, "transcriptions");
+      if (req.method === "POST" && (path === "/v1/videos" || path === "/v1/videos/generations")) return await handleJob(req, res, "video");
       if (req.method === "GET" && path === "/v1/models") return await listModels(res);
       if ((req.method === "GET" && (path === "/api/tags" || path === "/api/ps" || path === "/api/version")) || (req.method === "POST" && path === "/api/show")) {
         return await passthrough(req, res, path);
@@ -637,8 +704,10 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
     registry,
     monitor,
     metrics,
+    lag,
     warmUp,
     close: async () => {
+      lag.stop();
       clearInterval(sseTimer);
       clearInterval(reconcileTimer);
       for (const c of sseClients) c.end();

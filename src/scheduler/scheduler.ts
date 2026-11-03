@@ -185,6 +185,7 @@ export type Admission =
   | { kind: "never"; reason: string };
 
 const fmt = (b: number) => `${(b / GiB).toFixed(1)}G`;
+const rank = (p: Priority) => (p === "interactive" ? 0 : p === "background" ? 1 : 2);
 
 export class Scheduler {
   readonly units = new Map<string, Unit>();
@@ -414,7 +415,6 @@ export class Scheduler {
     const head = m ? this.headroom(m, this.policyFor(need, policy)) : Number.POSITIVE_INFINITY;
     if (committed + need <= budget && need <= head) return { kind: "fits" };
 
-    const rank = (p: Priority) => (p === "interactive" ? 0 : 1);
     const wanted = new Set(
       this.queue.filter((p) => rank(this.effectivePriority(p)) <= rank(forPriority)).map((p) => p.req.key),
     );
@@ -428,8 +428,8 @@ export class Scheduler {
           u.kind === "llm" &&
           !u.pin &&
           !wanted.has(u.key) &&
-          // Background work must not kick out a model between two steps of an agent.
-          (forPriority !== "background" || this.now() - u.lastUsed >= this.opts.backgroundEvictIdleMs) &&
+          // Background/deferrable work must not kick out a model between two steps of an agent.
+          (forPriority === "interactive" || this.now() - u.lastUsed >= this.opts.backgroundEvictIdleMs) &&
           (!u.foreign || (this.opts.evictForeign && u.ops && this.now() - u.lastUsed > this.opts.foreignIdleMs)),
       )
       .sort((a, b) => rank(b.priority) - rank(a.priority) || a.lastUsed - b.lastUsed);
@@ -459,11 +459,7 @@ export class Scheduler {
   }
 
   private ordered(): Pending[] {
-    return [...this.queue].sort((a, b) => {
-      const pa = this.effectivePriority(a) === "interactive" ? 0 : 1;
-      const pb = this.effectivePriority(b) === "interactive" ? 0 : 1;
-      return pa - pb || a.enq - b.enq;
-    });
+    return [...this.queue].sort((a, b) => rank(this.effectivePriority(a)) - rank(this.effectivePriority(b)) || a.enq - b.enq);
   }
 
   dispatch(): void {
@@ -495,11 +491,11 @@ export class Scheduler {
     // reserve their memory so two loads are never admitted against the same headroom.
     for (const p of this.ordered()) {
       const prio = this.effectivePriority(p);
-      if (prio === "background" && bgHold) {
-        p.waitReason = `background paused (${bgHold})`;
+      if (prio !== "interactive" && bgHold) {
+        p.waitReason = `${prio} paused (${bgHold})`;
         continue;
       }
-      if (prio === "background" && this.opts.strictPriority && interactiveWaiting) {
+      if ((prio === "background" && this.opts.strictPriority && interactiveWaiting) || (prio === "deferrable" && interactiveWaiting)) {
         p.waitReason = "waiting for interactive work";
         continue;
       }
@@ -845,7 +841,7 @@ export class Scheduler {
               // Another client's model: only once it has been idle long enough (it may be mid-session).
               (!u.foreign || (u.ops && now - u.lastUsed > this.opts.foreignIdleMs)),
           )
-          .sort((a, b) => (a.priority === "background" ? -1 : 1) - (b.priority === "background" ? -1 : 1));
+          .sort((a, b) => rank(b.priority) - rank(a.priority));
         void (async () => {
           for (const u of idle) {
             this.stats.evictions++;

@@ -71,6 +71,7 @@ async function main() {
       monitor.start();
       const gw = createGateway(config, { monitor });
       gw.scheduler.start();
+      gw.lag.start();
       await gw.registry.refresh().catch((e) => console.error(`[pitcrew] backend not reachable yet: ${(e as Error).message}`));
       void gw.warmUp().catch((e) => console.error(`[pitcrew] warm-up failed: ${(e as Error).message}`));
       gw.server.listen(config.listen.port, config.listen.host, () => {

@@ -3,7 +3,9 @@ import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-export type JobEndpoint = "images" | "speech" | "transcriptions";
+import type { Priority } from "../config.ts";
+
+export type JobEndpoint = "images" | "speech" | "transcriptions" | "video";
 
 export interface JobSpec {
   kind: "job";
@@ -12,7 +14,8 @@ export interface JobSpec {
   command: string[];
   /** Peak memory estimate in GiB until measured. */
   memoryGiB: number;
-  priority?: "interactive" | "background";
+  /** Default: background; video jobs default to deferrable. */
+  priority?: Priority;
   timeoutMs?: number;
   /** File extension the command writes to `{out}` (png, wav, txt…). */
   outputExt: string;

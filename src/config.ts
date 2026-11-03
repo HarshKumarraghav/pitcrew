@@ -3,7 +3,12 @@ import { homedir } from "node:os";
 import { join, resolve } from "node:path";
 import type { JobSpec } from "./backend/jobs.ts";
 
-export type Priority = "interactive" | "background";
+/**
+ * interactive: served first · background: waits for interactive work, ages into interactive after
+ * 60 s · deferrable: big jobs (video) that never age, run only when no interactive work is queued,
+ * and may unload the idle coder to make room.
+ */
+export type Priority = "interactive" | "background" | "deferrable";
 
 /** How much of the machine's memory the governor is willing to hand to models. */
 export type MemoryPolicy =
@@ -251,7 +256,8 @@ export function validate(c: Config): void {
   for (const [name, a] of Object.entries(c.models)) {
     if (a.kind === "job") {
       if (!Array.isArray(a.command) || !a.command.length) throw new Error(`models.${name}.command is required`);
-      if (!["images", "speech", "transcriptions"].includes(a.endpoint)) throw new Error(`models.${name}.endpoint is invalid`);
+      if (!["images", "speech", "transcriptions", "video"].includes(a.endpoint)) throw new Error(`models.${name}.endpoint is invalid`);
+      if (a.priority && !["interactive", "background", "deferrable"].includes(a.priority)) throw new Error(`models.${name}.priority is invalid`);
       continue;
     }
     if (!a.model) throw new Error(`models.${name}.model is required`);
