@@ -275,7 +275,9 @@ test("a primary model may load past soft headroom, but never past the budget or 
 
 test("fast lane: a loaded model keeps serving while degraded; new loads still hold", async () => {
   const m = machine({ available: 12 * G });
-  (await m.sched.acquire(m.req("small", 1 * G, { parallel: 2, pin: true }))).release();
+  const small = (n = 3) => m.req("small", 1 * G, { parallel: n });
+  // A helper request in flight keeps the helper resident through thrash relief.
+  const held = await m.sched.acquire(small());
   const coder = await m.sched.acquire(m.req("coder", 6 * G));
   m.mem.state = "critical";
   m.advance(10);
@@ -283,20 +285,20 @@ test("fast lane: a loaded model keeps serving while degraded; new loads still ho
   await flush();
   assert.equal(m.sched.snapshot().degraded, true);
   m.mem.state = "warn";
-  // One coder request is running and the degraded cap is 1, yet both small requests start at once.
-  const a = await m.sched.acquire(m.req("small", 1 * G, { parallel: 2, pin: true }));
-  const b = await m.sched.acquire(m.req("small", 1 * G, { parallel: 2, pin: true }));
+  // Two requests already run and the degraded cap is 1, yet two more helper requests start at once.
+  const a = await m.sched.acquire(small());
+  const b = await m.sched.acquire(small());
   let third = false;
-  const c = m.sched.acquire(m.req("small", 1 * G, { parallel: 2, pin: true })).then((l) => { third = true; return l; });
-  // A model that is not loaded still waits for a slot.
+  const c = m.sched.acquire(small()).then((l) => { third = true; return l; });
   let loaded = false;
   const other = m.sched.acquire(m.req("other", 1 * G)).then((l) => { loaded = true; return l; });
   await flush();
-  assert.equal(third, false, "per-model slots (parallel=2) still apply");
+  assert.equal(third, false, "per-model slots (parallel=3) still apply");
   assert.equal(loaded, false, "loads stay behind the degraded cap");
   a.release();
   (await c).release();
   b.release();
+  held.release();
   coder.release();
   (await other).release();
   assert.equal(loaded, true);
@@ -460,4 +462,18 @@ test("a context-grow reload is admitted even when the model has outgrown the bud
   assert.equal(l.ctx, 65536);
   l.release();
   assert.deepEqual(m.log, ["load:small", "load:coder", "unload:coder", "load:coder"]);
+});
+
+test("thrash relief also sheds pinned (warm) helpers; they reload on the next request", async () => {
+  const m = machine({ available: 12 * G });
+  (await m.sched.acquire(m.req("small", 1 * G, { pin: true }))).release();
+  m.mem.state = "critical";
+  m.advance(10);
+  m.advance(1500);
+  await flush();
+  assert.ok(m.log.includes("unload:small"));
+  m.mem.state = "ok";
+  m.advance(10);
+  (await m.sched.acquire(m.req("small", 1 * G, { pin: true }))).release();
+  assert.deepEqual(m.log, ["load:small", "unload:small", "load:small"]);
 });

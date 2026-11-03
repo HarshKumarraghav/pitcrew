@@ -5,6 +5,7 @@ set -uo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"; cd "$ROOT"
 LABEL="$1"; CONFIG="$2"; TASKS="$3"; REPEAT="${4:-1}"
 RUN="$LABEL-r$REPEAT"
+TAG="${TASKS//,/}"
 # Cold, empty backend so runs are comparable.
 for m in $(curl -s http://127.0.0.1:11434/api/ps | python3 -c 'import json,sys;print(" ".join(x["name"] for x in json.load(sys.stdin)["models"]))'); do
   curl -s http://127.0.0.1:11434/api/generate -d "{\"model\":\"$m\",\"keep_alive\":0}" >/dev/null
@@ -16,9 +17,13 @@ for i in $(seq 1 30); do curl -sf http://127.0.0.1:11500/healthz >/dev/null && b
 bench/tools/netwatch.sh "/tmp/nw-$RUN.txt" 21600 & NW=$!
 PITCREW_OPENCODE_PROFILE="$ROOT/examples/opencode/opencode.pitcrew.json" node bench/agent/run.mjs --model pitcrew/auto --label "$LABEL" --repeat "$REPEAT" --tests "$TASKS" --timeout 900
 mkdir -p "bench/agent/results/$RUN"
-curl -s http://127.0.0.1:11500/governor/state > "bench/agent/results/$RUN/gateway-state.json"
+curl -s http://127.0.0.1:11500/governor/state > "bench/agent/results/$RUN/gateway-state-$TAG.json"
 cp "$CONFIG" "bench/agent/results/$RUN/gateway-config.json"
-cp "/tmp/gw-$RUN.log" "bench/agent/results/$RUN/gateway.log"
+cp "/tmp/gw-$RUN.log" "bench/agent/results/$RUN/gateway-$TAG.log"
 kill $NW $GW 2>/dev/null; wait $GW 2>/dev/null
-cp "/tmp/nw-$RUN.txt" "bench/agent/results/$RUN/netwatch.txt" 2>/dev/null
+cp "/tmp/nw-$RUN.txt" "bench/agent/results/$RUN/netwatch-$TAG.txt" 2>/dev/null
+# Leave the machine as we found it: models load with keep_alive -1.
+for m in $(curl -s http://127.0.0.1:11434/api/ps | python3 -c 'import json,sys;print(" ".join(x["name"] for x in json.load(sys.stdin)["models"]))'); do
+  curl -s http://127.0.0.1:11434/api/generate -d "{\"model\":\"$m\",\"keep_alive\":0}" >/dev/null
+done
 echo "DONE $RUN"

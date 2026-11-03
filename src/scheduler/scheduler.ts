@@ -834,7 +834,7 @@ export class Scheduler {
             (u) =>
               u.state === "ready" &&
               u.inFlight === 0 &&
-              !u.pin &&
+              // Pinned/warm helpers go too (as documented for `pin`); they reload on their next request.
               !this.busy.has(u.key) &&
               // Another client's model: only once it has been idle long enough (it may be mid-session).
               (!u.foreign || (u.ops && now - u.lastUsed > this.opts.foreignIdleMs)),
