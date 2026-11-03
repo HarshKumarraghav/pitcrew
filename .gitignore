@@ -1,0 +1,7 @@
+node_modules/
+dist/
+bench/results/
+bench/agent/results/
+*.log
+.DS_Store
+.pitcrew/

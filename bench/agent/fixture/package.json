@@ -1,0 +1,14 @@
+{
+  "name": "taskboard",
+  "version": "0.3.0",
+  "private": true,
+  "type": "module",
+  "description": "Tiny task-tracking HTTP API",
+  "scripts": {
+    "start": "node --experimental-strip-types --no-warnings src/server.ts",
+    "test": "node --experimental-strip-types --no-warnings --test 'tests/**/*.test.ts'"
+  },
+  "engines": {
+    "node": ">=22.6"
+  }
+}

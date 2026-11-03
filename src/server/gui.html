@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>pitcrew · telemetry</title>
+<style>
+  :root {
+    --bg: #07090a; --panel: #0b0f0e; --fg: #b8f5c8; --dim: #4f7a5c; --faint: #1d2b23;
+    --hi: #6dff9e; --amber: #ffb547; --red: #ff5f56; --cyan: #5fd7ff; --violet: #c792ea;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: var(--bg); color: var(--fg); }
+  body {
+    font: 13px/1.45 ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    padding: 18px 22px 40px; min-height: 100vh;
+    background-image: radial-gradient(ellipse at top, #0f1a14 0%, var(--bg) 60%);
+  }
+  body::after { /* scanlines */
+    content: ""; position: fixed; inset: 0; pointer-events: none;
+    background: repeating-linear-gradient(to bottom, rgba(0,0,0,0) 0 2px, rgba(0,0,0,.18) 2px 3px);
+    mix-blend-mode: multiply;
+  }
+  .glow { text-shadow: 0 0 6px rgba(109,255,158,.35); }
+  header { display: flex; justify-content: space-between; align-items: baseline; gap: 16px; flex-wrap: wrap; margin-bottom: 14px; }
+  .brand { font-size: 15px; letter-spacing: .5px; }
+  .brand b { color: var(--hi); }
+  .brand .tag { color: var(--dim); margin-left: 10px; }
+  .pill { padding: 1px 8px; border: 1px solid currentColor; border-radius: 2px; font-weight: 600; }
+  .ok { color: var(--hi); } .warn { color: var(--amber); } .critical, .bad { color: var(--red); } .info { color: var(--cyan); }
+  .dim { color: var(--dim); } .violet { color: var(--violet); }
+  .grid { display: grid; grid-template-columns: 1.15fr 1fr; gap: 14px; }
+  @media (max-width: 1050px) { .grid { grid-template-columns: 1fr; } }
+  .box { position: relative; border: 1px solid var(--faint); background: linear-gradient(180deg, rgba(17,28,22,.55), rgba(8,12,10,.55)); padding: 14px 14px 10px; }
+  .box > .title { position: absolute; top: -9px; left: 10px; background: var(--bg); padding: 0 6px; color: var(--dim); font-size: 11px; letter-spacing: 1.5px; text-transform: uppercase; }
+  .box > .title b { color: var(--fg); font-weight: 600; }
+  .row { display: flex; gap: 10px; align-items: baseline; white-space: pre; overflow: hidden; }
+  .k { color: var(--dim); min-width: 92px; display: inline-block; }
+  .bar { letter-spacing: -1px; }
+  .b-app { color: #6b8f7a; } .b-model { color: var(--hi); } .b-est { color: var(--amber); } .b-free { color: #22362a; }
+  table { width: 100%; border-collapse: collapse; }
+  th { text-align: left; color: var(--dim); font-weight: 400; font-size: 11px; letter-spacing: 1px; text-transform: uppercase; padding: 2px 8px 6px 0; border-bottom: 1px dashed var(--faint); }
+  td { padding: 4px 8px 4px 0; white-space: nowrap; vertical-align: top; }
+  tr + tr td { border-top: 1px dotted #121c16; }
+  .dot { display: inline-block; width: 1ch; }
+  .loading { animation: blink 0.9s steps(2) infinite; }
+  @keyframes blink { 50% { opacity: .25; } }
+  .log { height: 270px; overflow: auto; font-size: 12px; scrollbar-color: var(--faint) transparent; }
+  .log div { white-space: pre-wrap; word-break: break-word; }
+  .log .t { color: var(--dim); }
+  .ev-evict, .ev-reject, .ev-timeout { color: var(--red); }
+  .ev-load, .ev-loaded, .ev-unload { color: var(--cyan); }
+  .ev-wait, .ev-thrash, .ev-foreign { color: var(--amber); }
+  .ev-start { color: var(--hi); }
+  .ev-finish, .ev-enqueue { color: var(--fg); opacity: .8; }
+  .spark { color: var(--amber); letter-spacing: -1px; }
+  .stats { display: grid; grid-template-columns: repeat(6, 1fr); gap: 8px; }
+  .stat { border-left: 2px solid var(--faint); padding-left: 8px; }
+  .stat .v { font-size: 20px; color: var(--hi); }
+  .stat .l { color: var(--dim); font-size: 11px; text-transform: uppercase; letter-spacing: 1px; }
+  .legend { color: var(--dim); font-size: 11px; margin-top: 6px; }
+  .cursor::after { content: "▋"; animation: blink 1s steps(2) infinite; color: var(--hi); margin-left: 4px; }
+  .empty { color: var(--dim); font-style: italic; }
+  a { color: var(--cyan); }
+  .full { grid-column: 1 / -1; }
+  .tag-m { color: var(--hi); border: 1px solid #1f4a2d; padding: 0 4px; font-size: 10px; margin-left: 4px; }
+  .tag-e { color: var(--amber); border: 1px solid #5a4319; padding: 0 4px; font-size: 10px; margin-left: 4px; }
+</style>
+</head>
+<body>
+<header>
+  <div class="brand glow"><b>▌PIT CREW</b> telemetry <span class="tag">OpenCode drives · local models are the crew</span></div>
+  <div><span id="conn" class="dim">connecting</span> &nbsp; state <span id="state" class="pill dim">—</span></div>
+</header>
+
+<div class="grid">
+  <section class="box">
+    <div class="title"><b>memory</b> · unified</div>
+    <div class="row"><span class="k">pool</span><span id="membar" class="bar"></span></div>
+    <div class="row"><span class="k"></span><span id="memtext" class="dim"></span></div>
+    <div class="row" style="margin-top:6px"><span class="k">swap</span><span id="swap"></span></div>
+    <div class="row"><span class="k">swap-out</span><span id="spark" class="spark"></span> <span id="swaprate" class="dim"></span></div>
+    <div class="row"><span class="k">pressure</span><span id="pressure"></span></div>
+    <div class="row"><span class="k">budget</span><span id="budget"></span></div>
+    <div class="legend"><span class="b-app">█</span> apps+os &nbsp;<span class="b-model">█</span> models (measured) &nbsp;<span class="b-est">█</span> models (estimate) &nbsp;<span class="b-free">█</span> available</div>
+  </section>
+
+  <section class="box">
+    <div class="title"><b>pit lane</b> · scheduler</div>
+    <div class="stats" id="stats"></div>
+    <div style="margin-top:12px"><table><thead><tr><th>#</th><th>prio</th><th>model</th><th>ctx</th><th>waiting</th><th>reason</th></tr></thead><tbody id="queue"></tbody></table></div>
+  </section>
+
+  <section class="box full">
+    <div class="title"><b>garage</b> · models</div>
+    <table>
+      <thead><tr><th></th><th>alias / model</th><th>state</th><th>ctx</th><th>memory</th><th></th><th>busy</th><th>idle</th><th>loads</th><th>last load</th></tr></thead>
+      <tbody id="units"></tbody>
+    </table>
+  </section>
+
+  <section class="box full">
+    <div class="title"><b>radio</b> · event log</div>
+    <div class="log" id="log"></div>
+    <div class="dim cursor" style="margin-top:6px">tail -f</div>
+  </section>
+</div>
+
+<script>
+const G = 1e9;
+const $ = (id) => document.getElementById(id);
+const gb = (b) => (b == null ? "—" : (b / G).toFixed(1) + "G");
+const esc = (s) => String(s ?? "").replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" })[c]);
+const ago = (ms) => (ms = Math.max(0, ms), ms < 1000 ? `${ms}ms` : ms < 60000 ? `${(ms / 1000).toFixed(1)}s` : `${Math.floor(ms / 60000)}m${Math.floor((ms % 60000) / 1000)}s`);
+const swapHist = [];
+const SPARK = "▁▂▃▄▅▆▇█";
+
+function bar(parts, width = 56) {
+  const total = parts.reduce((a, p) => a + p.v, 0) || 1;
+  let out = "", used = 0;
+  parts.forEach((p, i) => {
+    let n = i === parts.length - 1 ? width - used : Math.round((p.v / total) * width);
+    n = Math.max(0, Math.min(width - used, n));
+    used += n;
+    out += `<span class="${p.c}">${p.ch.repeat(n)}</span>`;
+  });
+  return out;
+}
+
+function render(s) {
+  const m = s.memory || {};
+  const sch = s.scheduler || {};
+  const st = m.state || "ok";
+  $("state").className = "pill " + (st === "ok" ? "ok" : st);
+  $("state").textContent = st.toUpperCase() + (sch.degraded ? " · DEGRADED" : "");
+
+  const units = sch.units || [];
+  const resident = units.filter((u) => u.state !== "unloaded" && u.state !== "failed");
+  const measured = resident.filter((u) => u.state === "ready").reduce((a, u) => a + u.bytes, 0);
+  const estimated = resident.filter((u) => u.state !== "ready").reduce((a, u) => a + u.bytes, 0);
+  const total = m.totalBytes || 1;
+  const avail = Math.max(0, m.availableBytes || 0);
+  const apps = Math.max(0, total - avail - measured - estimated);
+  $("membar").innerHTML = bar([
+    { v: apps, c: "b-app", ch: "▓" },
+    { v: measured, c: "b-model", ch: "█" },
+    { v: estimated, c: "b-est", ch: "▒" },
+    { v: avail, c: "b-free", ch: "░" },
+  ]);
+  $("memtext").innerHTML = `apps+os ${gb(apps)} · models ${gb(measured)}<span class="tag-m">measured</span>${estimated ? ` + ${gb(estimated)}<span class="tag-e">estimate</span>` : ""} · available ${gb(avail)} of ${gb(total)}`;
+  const swapPct = m.swapTotalBytes ? m.swapUsedBytes / m.swapTotalBytes : 0;
+  $("swap").innerHTML = `${bar([{ v: m.swapUsedBytes || 0, c: swapPct > 0.9 ? "warn" : "b-app", ch: "▓" }, { v: Math.max(0, (m.swapTotalBytes || 0) - (m.swapUsedBytes || 0)), c: "b-free", ch: "░" }], 30)} <span class="dim">${gb(m.swapUsedBytes)} / ${gb(m.swapTotalBytes)}</span>`;
+  swapHist.push(m.swapoutBps || 0);
+  if (swapHist.length > 48) swapHist.shift();
+  const max = Math.max(1, ...swapHist);
+  $("spark").textContent = swapHist.map((v) => SPARK[Math.min(7, Math.floor((v / max) * 7.99))]).join("");
+  $("swaprate").textContent = `${((m.swapoutBps || 0) / 1048576).toFixed(1)} MiB/s (smoothed)`;
+  $("pressure").innerHTML = `<span class="${m.pressure === "normal" ? "ok" : m.pressure === "warn" ? "warn" : "bad"}">${m.pressure || "—"}</span> <span class="dim">kernel</span>`;
+  $("budget").innerHTML = `${gb(sch.committedBytes)} committed / ${gb(sch.budgetBytes)} model budget · headroom ${gb(sch.headroomBytes)}<span class="tag-e">estimate</span>`;
+
+  const stats = sch.stats || {};
+  $("stats").innerHTML = [
+    ["running", `${sch.running ?? 0}/${sch.maxConcurrent ?? "?"}`],
+    ["queued", (sch.queue || []).length],
+    ["done", stats.finished ?? 0],
+    ["loads", stats.loads ?? 0],
+    ["evictions", stats.evictions ?? 0],
+    ["p95 wait", stats.queueWaitP95Ms != null ? ago(stats.queueWaitP95Ms) : "—"],
+  ].map(([l, v]) => `<div class="stat"><div class="v glow">${v}</div><div class="l">${l}</div></div>`).join("");
+
+  $("queue").innerHTML = (sch.queue || []).length
+    ? sch.queue.map((q) => `<tr><td class="dim">${q.id}</td><td class="${q.priority === "interactive" ? "ok" : "violet"}">${q.priority}</td><td>${esc(q.label || q.key)}</td><td>${q.ctx || "—"}</td><td>${ago(q.waitingMs)}</td><td class="warn">${esc(q.reason || "")}</td></tr>`).join("")
+    : `<tr><td colspan="6" class="empty">pit lane clear</td></tr>`;
+
+  const aliasOf = {};
+  for (const [a, v] of Object.entries(s.aliases || {})) if (v.model) aliasOf[v.model] = a;
+  const now = Date.now();
+  $("units").innerHTML = units.length
+    ? units
+        .sort((a, b) => (b.state === "ready") - (a.state === "ready") || b.bytes - a.bytes)
+        .map((u) => {
+          const icon = u.state === "ready" ? (u.inFlight ? '<span class="ok">●</span>' : '<span class="ok">○</span>') : u.state === "loading" ? '<span class="info loading">◌</span>' : u.state === "failed" ? '<span class="bad">✕</span>' : '<span class="dim">·</span>';
+          const name = (aliasOf[u.key] ? `<span class="hi">${esc(aliasOf[u.key])}</span> ` : "") + `<span class="${u.foreign ? "warn" : ""}">${esc(u.key)}</span>${u.pin ? ' <span class="violet">pinned</span>' : ""}${u.foreign ? ' <span class="warn">(outside pitcrew)</span>' : ""}`;
+          const mem = u.bytes ? gb(u.bytes) : "—";
+          const tag = u.state === "ready" ? '<span class="tag-m">measured</span>' : u.state === "loading" ? '<span class="tag-e">estimate</span>' : "";
+          const w = Math.round(((u.bytes || 0) / total) * 40);
+          return `<tr><td>${icon}</td><td>${name}</td><td class="${u.state === "ready" ? "ok" : u.state === "loading" ? "info" : "dim"}">${u.state}${u.draining ? " (draining)" : ""}</td><td>${u.ctx || "—"}</td><td>${mem}${tag}</td><td class="b-model bar">${"█".repeat(w)}</td><td>${u.inFlight}</td><td class="dim">${u.idleMs != null ? ago(u.idleMs) : "—"}</td><td>${u.loads}</td><td class="dim">${u.lastLoadMs ? ago(u.lastLoadMs) : "—"}</td></tr>`;
+        })
+        .join("")
+    : `<tr><td colspan="10" class="empty">no models touched yet — send a request to /v1/chat/completions</td></tr>`;
+}
+
+function logLine(e) {
+  const el = document.createElement("div");
+  el.className = "ev-" + e.type;
+  el.innerHTML = `<span class="t">${new Date(e.t).toTimeString().slice(0, 8)}</span> ${e.type.padEnd(7, " ")} ${esc(e.msg)}`;
+  const log = $("log");
+  const stick = log.scrollTop + log.clientHeight >= log.scrollHeight - 8;
+  log.appendChild(el);
+  while (log.children.length > 400) log.removeChild(log.firstChild);
+  if (stick) log.scrollTop = log.scrollHeight;
+}
+
+let seeded = false;
+function connect() {
+  const es = new EventSource("/governor/events");
+  es.addEventListener("state", (ev) => {
+    const s = JSON.parse(ev.data);
+    if (!seeded) {
+      (s.events || []).forEach(logLine);
+      seeded = true;
+    }
+    render(s);
+    $("conn").textContent = "● live";
+    $("conn").className = "ok";
+  });
+  es.addEventListener("log", (ev) => logLine(JSON.parse(ev.data)));
+  es.onerror = () => {
+    $("conn").textContent = "○ reconnecting";
+    $("conn").className = "warn";
+  };
+}
+connect();
+</script>
+</body>
+</html>

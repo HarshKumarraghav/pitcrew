@@ -1,0 +1,44 @@
+{
+  "name": "pitcrew-ai",
+  "version": "0.1.0",
+  "description": "Pit Crew: OpenCode drives. Your local models are the crew. An OpenCode-first, resource-aware, multi-model local coding platform for unified-memory machines: memory-aware model scheduling, product intelligence and retrieval, benchmarks, and optional LoRA tuning. No swap, no cloud, no crashes.",
+  "type": "module",
+  "license": "MIT",
+  "bin": {
+    "pitcrew": "dist/cli.js"
+  },
+  "files": [
+    "dist",
+    "examples",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.6"
+  },
+  "scripts": {
+    "dev": "node --experimental-strip-types --no-warnings src/cli.ts",
+    "start": "node dist/cli.js",
+    "build": "tsc -p tsconfig.build.json && cp src/server/gui.html dist/server/gui.html",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --experimental-strip-types --no-warnings --test 'test/**/*.test.ts'",
+    "bench:load": "node --experimental-strip-types --no-warnings bench/load/run.ts",
+    "bench:agent": "node bench/agent/run.mjs"
+  },
+  "keywords": [
+    "apple-silicon",
+    "coding-agent",
+    "llm",
+    "local-llm",
+    "memory",
+    "ollama",
+    "openai-compatible",
+    "opencode",
+    "pitcrew",
+    "scheduler"
+  ],
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "typescript": "^5.8.0"
+  }
+}

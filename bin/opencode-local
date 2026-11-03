@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# Launch OpenCode with the local-only profile. Your global OpenCode config is left untouched;
+# this profile is merged on top and restricts providers to local inference.
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+export OPENCODE_CONFIG="${PITCREW_OPENCODE_PROFILE:-$ROOT/examples/opencode/opencode.local.json}"
+export OPENCODE_DISABLE_AUTOUPDATE=1       # no update checks
+export OPENCODE_DISABLE_MODELS_FETCH=1     # no models.dev metadata download
+export OPENCODE_DISABLE_LSP_DOWNLOAD=1     # no automatic language-server downloads
+export OPENCODE_DISABLE_CLAUDE_CODE=1      # don't import ~/.claude prompts/skills (saves ~15k tokens)
+export OPENCODE_DISABLE_EXTERNAL_SKILLS=1
+exec opencode "$@"

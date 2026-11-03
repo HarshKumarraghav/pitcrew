@@ -1,0 +1,42 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "model": "pitcrew/auto",
+  "small_model": "pitcrew/auto",
+  "enabled_providers": ["pitcrew"],
+  "share": "disabled",
+  "autoupdate": false,
+  "tools": {
+    "webfetch": false,
+    "skill": false,
+    "task": false
+  },
+  "permission": {
+    "edit": "ask",
+    "bash": "ask",
+    "webfetch": "deny",
+    "external_directory": "ask"
+  },
+  "provider": {
+    "pitcrew": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "Pit Crew (local)",
+      "options": {
+        "baseURL": "http://127.0.0.1:11500/v1"
+      },
+      "models": {
+        "auto": {
+          "name": "Pit Crew auto (router: coder + light model)",
+          "tool_call": true,
+          "reasoning": true,
+          "limit": { "context": 32768, "output": 8192 }
+        },
+        "coder": {
+          "name": "Pit Crew coder (qwen3.5:9b)",
+          "tool_call": true,
+          "reasoning": true,
+          "limit": { "context": 32768, "output": 8192 }
+        }
+      }
+    }
+  }
+}
