@@ -4,6 +4,7 @@
 // Agent results: bench/agent/results/<label>/<TASK>.json. Runs named "<config>-rN" are repeats of
 // one configuration and are grouped. Tasks are whatever appears in the results (A–F, G–P, ...).
 // Optional display names: bench/agent/results/labels.json = { "<config or prefix>": "Display name" }.
+import { loadRequests, budgetsForDir, formatBudgets } from "./budget.mjs";
 import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -175,10 +176,20 @@ if (withDiff.length) {
 // Join each result's [startedAtMs, endedAtMs] window (+ label/task) with the gateway request log
 // (~/.pitcrew/requests.jsonl) and split wall time into prefill / decode / tool / idle per task.
 // Return Markdown lines to print, or [] to print nothing. Called once with all configurations.
-function timeBudgetSection(configs, tasks) {
-  return []; // TODO(M7.0): implement; check that the budget sums to within 5% of wallS.
+/** M7.0: per-task time budget from the gateway request log (only runs that went through Pit Crew). */
+function timeBudgetSection(configs) {
+  const requests = loadRequests(process.env.PITCREW_REQUEST_LOG);
+  if (!requests.length) return [];
+  const out = [];
+  for (const [cfg, runs] of configs) {
+    for (const { run } of runs) {
+      const rows = budgetsForDir(join(AGENT, run), requests).filter((r) => !r.missing && r.agentRequests > 0);
+      if (rows.length) out.push(`#### ${show(cfg)} · \`${run}\`\n\n${formatBudgets(rows)}\n`);
+    }
+  }
+  return out;
 }
-const budget = timeBudgetSection(configs, TASKS);
+const budget = timeBudgetSection(configs);
 if (budget.length) console.log(`\n### Time budget per task\n\n${budget.join("\n")}`);
 
 console.log(`\nTasks: ${TASKS.map((k) => `${k} ${taskNames.get(k) ?? ""}`.trim()).join(" · ")}.`);
