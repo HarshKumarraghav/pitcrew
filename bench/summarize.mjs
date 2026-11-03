@@ -1,5 +1,9 @@
 #!/usr/bin/env node
 // Turn every result file under bench/ into Markdown tables (agent suite + load benchmark).
+//
+// Agent results: bench/agent/results/<label>/<TASK>.json. Runs named "<config>-rN" are repeats of
+// one configuration and are grouped. Tasks are whatever appears in the results (A–F, G–P, ...).
+// Optional display names: bench/agent/results/labels.json = { "<config or prefix>": "Display name" }.
 import { readdirSync, readFileSync, existsSync } from "node:fs";
 import { join, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -7,55 +11,180 @@ import { fileURLToPath } from "node:url";
 const HERE = dirname(fileURLToPath(import.meta.url));
 const AGENT = join(HERE, "agent", "results");
 const LOAD = join(HERE, "results", "load");
-const TASKS = ["A", "B", "C", "D", "E", "F"];
-const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : NaN);
-const sd = (xs) => (xs.length > 1 ? Math.sqrt(mean(xs.map((x) => (x - mean(xs)) ** 2))) : 0);
+const REGRESSION = new Set(["A", "B", "C", "D", "E", "F"]);
+
+const sum = (xs) => xs.reduce((a, b) => a + b, 0);
+const mean = (xs) => (xs.length ? sum(xs) / xs.length : NaN);
+const median = (xs) => {
+  const s = xs.filter(Number.isFinite).sort((a, b) => a - b);
+  if (!s.length) return NaN;
+  const m = s.length >> 1;
+  return s.length % 2 ? s[m] : (s[m - 1] + s[m]) / 2;
+};
 const f0 = (x) => (Number.isFinite(x) ? x.toFixed(0) : "—");
 const f1 = (x) => (Number.isFinite(x) ? x.toFixed(1) : "—");
+const kTok = (x) => (Number.isFinite(x) ? (x >= 1000 ? `${(x / 1000).toFixed(1)}k` : x.toFixed(0)) : "—");
+/** "median (min–max)" — just the value when there is one sample. */
+const mr = (xs, fmt = f0) => {
+  const v = xs.filter(Number.isFinite);
+  if (!v.length) return "—";
+  if (v.length === 1) return fmt(v[0]);
+  return `${fmt(median(v))} (${fmt(Math.min(...v))}–${fmt(Math.max(...v))})`;
+};
 
-// group runs: "m1-qwen35-9b-32k", "m1-qwen35-9b-32k-r2" → config "m1-qwen35-9b-32k"
-const runs = existsSync(AGENT) ? readdirSync(AGENT).filter((d) => existsSync(join(AGENT, d, "A.json")) || existsSync(join(AGENT, d, "F.json"))) : [];
+// ---------------------------------------------------------------------------------------------
+// Load agent results
+
+const TASK_FILE = /^([A-Z])\.json$/;
+const runDirs = existsSync(AGENT)
+  ? readdirSync(AGENT, { withFileTypes: true }).filter((d) => d.isDirectory() && readdirSync(join(AGENT, d.name)).some((f) => TASK_FILE.test(f))).map((d) => d.name).sort()
+  : [];
+/** config → [{ run, tasks: { A: result, ... } }] */
 const configs = new Map();
-for (const r of runs) {
-  const cfg = r.replace(/-r\d+$/, "");
+const taskNames = new Map();
+for (const run of runDirs) {
+  const cfg = run.replace(/-r\d+$/, "");
   const tasks = {};
-  for (const t of TASKS) {
-    const p = join(AGENT, r, `${t}.json`);
-    if (existsSync(p)) tasks[t] = JSON.parse(readFileSync(p, "utf8"));
+  for (const f of readdirSync(join(AGENT, run))) {
+    const m = TASK_FILE.exec(f);
+    if (!m) continue;
+    try {
+      tasks[m[1]] = JSON.parse(readFileSync(join(AGENT, run, f), "utf8"));
+      if (!taskNames.has(m[1])) taskNames.set(m[1], tasks[m[1]].name);
+    } catch {
+      /* partial write — ignore */
+    }
   }
   if (!configs.has(cfg)) configs.set(cfg, []);
-  configs.get(cfg).push({ run: r, tasks });
+  configs.get(cfg).push({ run, tasks });
 }
-const label = (c) =>
-  c.startsWith("cc-opus-4-6") ? "Claude Code + Opus 4.6 (cloud)" : c.startsWith("cc-sonnet-4-6") ? "Claude Code + Sonnet 4.6 (cloud)" :
-  c.startsWith("m1-") ? "Direct (OpenCode → Ollama, same model for titles)" : c.includes("modeA") ? "Pit Crew mode A (single model)" : c.includes("modeB") ? "Pit Crew mode B (sequential light+strong)" : c.includes("modeC") ? "Pit Crew mode C (resource-aware hybrid)" : c;
+const TASKS = [...taskNames.keys()].sort();
 
-console.log("## Agent suite (OpenCode, 6 tasks, hidden verifiers)\n");
-console.log("| configuration | runs | tasks passed (per run) | mean wall / run | mean wait before 1st step | tool calls / run | tool errors / run | mean swap growth / task | cost / run |");
-console.log("|---|---|---|---|---|---|---|---|---|");
-for (const [cfg, rs] of configs) {
-  const passed = rs.map((r) => Object.values(r.tasks).filter((t) => t.success).length);
-  const totals = rs.map((r) => Object.values(r.tasks).reduce((a, t) => a + t.wallS, 0));
-  const waits = rs.flatMap((r) => Object.values(r.tasks).map((t) => t.timeToFirstOutputS ?? NaN)).filter(Number.isFinite);
-  const tools = rs.flatMap((r) => Object.values(r.tasks).map((t) => t.toolCalls));
-  const terr = rs.flatMap((r) => Object.values(r.tasks).map((t) => t.toolErrors));
-  const swap = rs.flatMap((r) => Object.values(r.tasks).map((t) => (t.mem.maxSwapMB - t.mem.startSwapMB) / 1024));
-  const costs = rs.map((r) => Object.values(r.tasks).reduce((a, t) => a + (t.costUsd ?? 0), 0));
-  const cost = rs.some((r) => Object.values(r.tasks).some((t) => t.costUsd !== undefined)) ? `$${mean(costs).toFixed(2)} (API-equiv.)` : "$0 (local)";
-  console.log(`| ${label(cfg)} | ${rs.length} | ${passed.map((p) => `${p}/6`).join(", ")} | ${f0(mean(totals))} s ± ${f0(sd(totals))} | ${f0(mean(waits))} s | ${f0(mean(tools.length ? [tools.reduce((a, b) => a + b, 0) / rs.length] : []))} | ${f0(terr.reduce((a, b) => a + b, 0) / rs.length)} | ${f1(mean(swap))} GB | ${cost} |`);
+// ---------------------------------------------------------------------------------------------
+// Display names: optional map file first (exact key, then longest matching prefix), then generic rules.
+
+const NAME_MAP = (() => {
+  const p = join(AGENT, "labels.json");
+  try {
+    return existsSync(p) ? JSON.parse(readFileSync(p, "utf8")) : {};
+  } catch {
+    return {};
+  }
+})();
+const FAMILY = { opus: "Opus", sonnet: "Sonnet", haiku: "Haiku" };
+function label(c) {
+  if (NAME_MAP[c]) return NAME_MAP[c];
+  const prefix = Object.keys(NAME_MAP).filter((k) => c.startsWith(k)).sort((a, b) => b.length - a.length)[0];
+  if (prefix) return NAME_MAP[prefix];
+  let m;
+  if ((m = /^cc-(opus|sonnet|haiku)-(\d+)-(\d+)(.*)$/.exec(c))) return `Claude Code + ${FAMILY[m[1]]} ${m[2]}.${m[3]} (cloud)${m[4] ? ` ${m[4].replace(/^-/, "")}` : ""}`;
+  if ((m = /^cc-(.+)$/.exec(c))) return `Claude Code + ${m[1]} (cloud)`;
+  if ((m = /^baseline(?:-(.+))?$/.exec(c))) return `Fair baseline (OpenCode → Ollama)${m[1] ? ` ${m[1]}` : ""}`;
+  if ((m = /^pitcrew-(.+)$/.exec(c))) return `Pit Crew ${m[1]}`;
+  if (c.startsWith("m1-")) return "Direct (OpenCode → Ollama, same model for titles)";
+  if (c.includes("modeA")) return "Pit Crew mode A (single model)";
+  if (c.includes("modeB")) return "Pit Crew mode B (sequential light+strong)";
+  if (c.includes("modeC")) return "Pit Crew mode C (resource-aware hybrid)";
+  return c;
 }
-console.log("\n### Per task: success rate and mean wall time (s)\n");
-console.log(`| configuration | ${TASKS.map((t) => `${t}`).join(" | ")} |`);
+const show = (c) => (label(c) === c ? `\`${c}\`` : `${label(c)} \`${c}\``);
+
+// ---------------------------------------------------------------------------------------------
+// Per-result helpers
+
+const all = (rs) => rs.flatMap((r) => Object.values(r.tasks));
+/** Largest single-request prompt. Old Claude results stored the session total in `input`, so skip those. */
+const inputPeak = (t) => t.tokens?.inputPeak ?? (t.agent === "claude" ? NaN : t.tokens?.input ?? NaN);
+const outTok = (t) => (t.tokens?.output ?? 0) + (t.tokens?.reasoning ?? 0);
+/** Solved tasks per hour = passes ÷ total wall hours (failed tasks cost their full time). */
+const solvedPerHour = (ts) => {
+  const h = sum(ts.map((t) => t.wallS)) / 3600;
+  return h > 0 ? ts.filter((t) => t.success).length / h : NaN;
+};
+
+// ---------------------------------------------------------------------------------------------
+// Overview
+
+console.log(`## Agent suite (${TASKS.length} tasks: ${TASKS.join(" ")}, hidden verifiers)\n`);
+console.log("Medians over repeats with (min–max). Pass rate = passes / attempts over all runs. Solved / h = passes ÷ total wall hours.\n");
+console.log("| configuration | runs | pass rate | passed per run | wall / run (s) | solved / h | solved / h A–F | solved / h hard | wait before 1st step | out tokens / run | peak prompt / task | tool calls / run | tool errors / run | mean swap growth / task | cost / run |");
+console.log("|---|---|---|---|---|---|---|---|---|---|---|---|---|---|---|");
+for (const [cfg, rs] of configs) {
+  const ts = all(rs);
+  const cfgTasks = new Set(ts.map((t) => t.task));
+  const full = rs.filter((r) => Object.keys(r.tasks).length === cfgTasks.size);
+  const partial = rs.length - full.length;
+  const passes = ts.filter((t) => t.success).length;
+  const passedPerRun = rs.map((r) => `${Object.values(r.tasks).filter((t) => t.success).length}/${Object.keys(r.tasks).length}`);
+  const walls = full.map((r) => sum(Object.values(r.tasks).map((t) => t.wallS)));
+  const outs = full.map((r) => sum(Object.values(r.tasks).map(outTok)));
+  const waits = ts.map((t) => t.timeToFirstOutputS ?? NaN);
+  const swap = ts.map((t) => (t.mem ? (t.mem.maxSwapMB - t.mem.startSwapMB) / 1024 : NaN)).filter(Number.isFinite);
+  const hasCost = ts.some((t) => t.costUsd !== undefined);
+  const cost = hasCost ? `$${mean(full.map((r) => sum(Object.values(r.tasks).map((t) => t.costUsd ?? 0)))).toFixed(2)} (API-equiv.)` : "$0 (local)";
+  const reg = ts.filter((t) => REGRESSION.has(t.task));
+  const hard = ts.filter((t) => !REGRESSION.has(t.task));
+  console.log(
+    `| ${show(cfg)} | ${rs.length}${partial ? ` (${partial} partial)` : ""} | ${passes}/${ts.length} (${f0((100 * passes) / ts.length)}%) | ${passedPerRun.join(", ")} | ${mr(walls)} | ${f1(solvedPerHour(ts))} | ${reg.length ? f1(solvedPerHour(reg)) : "—"} | ${hard.length ? f1(solvedPerHour(hard)) : "—"} | ${f0(median(waits))} s | ${mr(outs, kTok)} | ${kTok(median(ts.map(inputPeak)))} | ${f0(sum(ts.map((t) => t.toolCalls ?? 0)) / rs.length)} | ${f0(sum(ts.map((t) => t.toolErrors ?? 0)) / rs.length)} | ${f1(mean(swap))} GB | ${cost} |`,
+  );
+}
+
+// ---------------------------------------------------------------------------------------------
+// Per task
+
+console.log("\n### Per task: passes / runs · median wall in s (min–max)\n");
+console.log(`| configuration | ${TASKS.join(" | ")} |`);
 console.log(`|---|${TASKS.map(() => "---").join("|")}|`);
 for (const [cfg, rs] of configs) {
-  const cells = TASKS.map((t) => {
-    const xs = rs.map((r) => r.tasks[t]).filter(Boolean);
+  const cells = TASKS.map((k) => {
+    const xs = rs.map((r) => r.tasks[k]).filter(Boolean);
     if (!xs.length) return "—";
-    return `${xs.filter((x) => x.success).length}/${xs.length} · ${f0(mean(xs.map((x) => x.wallS)))}`;
+    return `${xs.filter((x) => x.success).length}/${xs.length} · ${mr(xs.map((x) => x.wallS))}`;
   });
-  console.log(`| ${label(cfg)} | ${cells.join(" | ")} |`);
+  console.log(`| ${show(cfg)} | ${cells.join(" | ")} |`);
 }
-console.log("\nTasks: A codegen+tests · B repo understanding · C multi-file feature · D debugging · E tool execution · F multi-step (includes a route-shadowing trap).");
+
+console.log("\n### Per task: output tokens (median) · peak prompt (median)\n");
+console.log(`| configuration | ${TASKS.join(" | ")} |`);
+console.log(`|---|${TASKS.map(() => "---").join("|")}|`);
+for (const [cfg, rs] of configs) {
+  const cells = TASKS.map((k) => {
+    const xs = rs.map((r) => r.tasks[k]).filter(Boolean);
+    return xs.length ? `${kTok(median(xs.map(outTok)))} · ${kTok(median(xs.map(inputPeak)))}` : "—";
+  });
+  console.log(`| ${show(cfg)} | ${cells.join(" | ")} |`);
+}
+
+// Quality signals recorded by the harness (newer results only): tests weakened / diff size.
+const withDiff = [...configs].filter(([, rs]) => all(rs).some((t) => t.diff));
+if (withDiff.length) {
+  console.log("\n### Diff size and test hygiene (results with diff records)\n");
+  console.log("| configuration | median lines +/- per task | median test lines +/- | tests weakened | tests/ touched where forbidden |");
+  console.log("|---|---|---|---|---|");
+  for (const [cfg, rs] of withDiff) {
+    const ts = all(rs).filter((t) => t.diff);
+    const forbidden = ts.filter((t) => (t.failedChecks ?? []).some((c) => /TestsUntouched|testsUntouched/.test(c))).length;
+    console.log(
+      `| ${show(cfg)} | +${f0(median(ts.map((t) => t.diff.added)))}/-${f0(median(ts.map((t) => t.diff.removed)))} | +${f0(median(ts.map((t) => t.diff.testsAdded)))}/-${f0(median(ts.map((t) => t.diff.testsRemoved)))} | ${ts.filter((t) => t.diff.testsWeakened).length}/${ts.length} | ${forbidden}/${ts.length} |`,
+    );
+  }
+}
+
+// ---------------------------------------------------------------------------------------------
+// HOOK (M7.0): per-task time budget.
+// Join each result's [startedAtMs, endedAtMs] window (+ label/task) with the gateway request log
+// (~/.pitcrew/requests.jsonl) and split wall time into prefill / decode / tool / idle per task.
+// Return Markdown lines to print, or [] to print nothing. Called once with all configurations.
+function timeBudgetSection(configs, tasks) {
+  return []; // TODO(M7.0): implement; check that the budget sums to within 5% of wallS.
+}
+const budget = timeBudgetSection(configs, TASKS);
+if (budget.length) console.log(`\n### Time budget per task\n\n${budget.join("\n")}`);
+
+console.log(`\nTasks: ${TASKS.map((k) => `${k} ${taskNames.get(k) ?? ""}`.trim()).join(" · ")}.`);
+
+// ---------------------------------------------------------------------------------------------
+// Load benchmark (unchanged)
 
 if (existsSync(LOAD)) {
   const files = readdirSync(LOAD).filter((f) => f.endsWith(".json")).sort();
