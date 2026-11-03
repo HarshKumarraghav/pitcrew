@@ -1,0 +1,52 @@
+{
+  "listen": { "host": "127.0.0.1", "port": 11500 },
+  "backend": { "url": "http://127.0.0.1:11434", "managed": false, "parallel": "auto" },
+  "memory": { "policy": "balanced", "osReserveGiB": 4, "minFreeGiB": 1, "thrashSwapoutMiBps": 40 },
+  "scheduler": { "maxConcurrent": 2, "queueTimeoutMs": 900000, "idleUnloadMs": 900000, "strictPriority": true, "fastLane": true, "backgroundEvictIdleMs": 3000 },
+  "context": { "buckets": [8192, 16384, 32768, 65536], "defaultMaxOutput": 4096 },
+  "router": { "name": "auto", "mode": "C", "coder": "coder", "light": "small" },
+  "models": {
+    "coder": {
+      "model": "qwen3.5:9b",
+      "primary": true,
+      "parallel": 1,
+      "minCtx": 32768,
+      "maxCtx": 65536,
+      "maxResidentGiB": 10,
+      "priority": "interactive",
+      "parameters": { "temperature": 0.6, "top_p": 0.95, "top_k": 20, "presence_penalty": 0 }
+    },
+    "small": { "model": "qwen3.5:0.8b", "maxCtx": 16384, "priority": "interactive", "warm": true, "parallel": 2 },
+    "stt": {
+      "kind": "job",
+      "endpoint": "transcriptions",
+      "priority": "interactive",
+      "memoryGiB": 1.2,
+      "outputExt": "txt",
+      "timeoutMs": 120000,
+      "env": { "HF_HUB_OFFLINE": "1" },
+      "command": ["uvx", "--offline", "--python", "3.11", "--from", "mlx-whisper==0.4.3", "--with", "torch==2.11.0", "mlx_whisper", "{file}", "--model", "mlx-community/whisper-small-mlx", "--output-dir", "{dir}", "--output-name", "out", "--output-format", "txt", "--verbose", "False"]
+    },
+    "tts": {
+      "kind": "job",
+      "endpoint": "speech",
+      "priority": "interactive",
+      "memoryGiB": 1.0,
+      "outputExt": "wav",
+      "timeoutMs": 120000,
+      "defaults": { "voice": "af_heart" },
+      "env": { "HF_HUB_OFFLINE": "1" },
+      "command": ["uvx", "--offline", "--prerelease=allow", "--python", "3.11", "--from", "mlx-audio==0.6.3", "--with", "espeakng-loader==0.2.4", "--with", "misaki[en]==0.9.4", "python", "-m", "mlx_audio.tts.generate", "--model", "mlx-community/Kokoro-82M-bf16", "--text", "{input}", "--voice", "{voice}", "--output_path", "{dir}", "--file_prefix", "out", "--audio_format", "wav"]
+    },
+    "video": {
+      "kind": "job",
+      "endpoint": "video",
+      "priority": "deferrable",
+      "memoryGiB": 6,
+      "outputExt": "mp4",
+      "timeoutMs": 600000,
+      "defaults": { "seconds": 30 },
+      "command": ["node", "{pitcrew_root}/bench/tools/ballast.mjs", "--gb", "6", "--seconds", "{seconds}", "--out", "{out}"]
+    }
+  }
+}

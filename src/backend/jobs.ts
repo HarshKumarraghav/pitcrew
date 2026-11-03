@@ -1,7 +1,8 @@
 import { spawn, execFile } from "node:child_process";
 import { mkdtemp, readFile, readdir, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { join, dirname } from "node:path";
+import { fileURLToPath } from "node:url";
 
 import type { Priority } from "../config.ts";
 
@@ -31,6 +32,9 @@ export interface JobResult {
   peakRssBytes: number;
   stderrTail: string;
 }
+
+/** Pit Crew's own install directory, for job commands that run bundled tools (`{pitcrew_root}`). */
+const PITCREW_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..", "..");
 
 const PLACEHOLDER = /\{([a-zA-Z_]+)\}/g;
 
@@ -66,7 +70,7 @@ export async function runJob(
 ): Promise<JobResult> {
   const dir = await mkdtemp(join(tmpdir(), "pitcrew-job-"));
   const out = join(dir, `out.${spec.outputExt}`);
-  const argv = renderArgv(spec.command, { ...spec.defaults, ...vars, out, dir });
+  const argv = renderArgv(spec.command, { pitcrew_root: PITCREW_ROOT, ...spec.defaults, ...vars, out, dir });
   const [cmd, ...args] = argv;
   if (!cmd) throw new Error("job command is empty");
   const t0 = Date.now();
