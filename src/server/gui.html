@@ -50,7 +50,7 @@
   .log .t { color: var(--dim); }
   .ev-evict, .ev-reject, .ev-timeout { color: var(--red); }
   .ev-load, .ev-loaded, .ev-unload { color: var(--cyan); }
-  .ev-wait, .ev-thrash, .ev-foreign { color: var(--amber); }
+  .ev-wait, .ev-thrash, .ev-foreign, .ev-recycle { color: var(--amber); }
   .ev-start { color: var(--hi); }
   .ev-finish, .ev-enqueue { color: var(--fg); opacity: .8; }
   .spark { color: var(--amber); letter-spacing: -1px; }
@@ -82,6 +82,8 @@
     <div class="row"><span class="k">swap-out</span><span id="spark" class="spark"></span> <span id="swaprate" class="dim"></span></div>
     <div class="row"><span class="k">pressure</span><span id="pressure"></span></div>
     <div class="row"><span class="k">budget</span><span id="budget"></span></div>
+    <div class="row"><span class="k">lag</span><span id="lag"></span></div>
+    <div class="row"><span class="k">backend</span><span id="slots" class="dim"></span></div>
     <div class="legend"><span class="b-app">█</span> apps+os &nbsp;<span class="b-model">█</span> models (measured) &nbsp;<span class="b-est">█</span> models (estimate) &nbsp;<span class="b-free">█</span> available</div>
   </section>
 
@@ -94,9 +96,18 @@
   <section class="box full">
     <div class="title"><b>garage</b> · models</div>
     <table>
-      <thead><tr><th></th><th>alias / model</th><th>state</th><th>ctx</th><th>memory</th><th></th><th>busy</th><th>idle</th><th>loads</th><th>last load</th></tr></thead>
+      <thead><tr><th></th><th>alias / model</th><th>state</th><th>ctx</th><th>memory</th><th></th><th>busy</th><th>idle</th><th>loads</th><th>last load</th><th>why</th></tr></thead>
       <tbody id="units"></tbody>
     </table>
+  </section>
+
+  <section class="box full">
+    <div class="title"><b>jobs</b> · learned peak memory (image · voice · video)</div>
+    <table>
+      <thead><tr><th>job</th><th>endpoint</th><th>declared</th><th>peak used for admission</th><th>RSS</th><th>free-memory drop</th><th>runs</th><th>updated</th></tr></thead>
+      <tbody id="jobs"></tbody>
+    </table>
+    <div class="legend">admission uses max(RSS, drop in available memory) × 1.1 — Metal allocations may not show up in RSS.</div>
   </section>
 
   <section class="box full">
@@ -157,6 +168,17 @@ function render(s) {
   $("swaprate").textContent = `${((m.swapoutBps || 0) / 1048576).toFixed(1)} MiB/s (smoothed)`;
   $("pressure").innerHTML = `<span class="${m.pressure === "normal" ? "ok" : m.pressure === "warn" ? "warn" : "bad"}">${m.pressure || "—"}</span> <span class="dim">kernel</span>`;
   $("budget").innerHTML = `${gb(sch.committedBytes)} committed / ${gb(sch.budgetBytes)} model budget · headroom ${gb(sch.headroomBytes)}<span class="tag-e">estimate</span>`;
+  const lag = s.responsiveness || {};
+  const lagCls = lag.p95Ms == null ? "dim" : lag.p95Ms < 30 ? "ok" : lag.p95Ms < 150 ? "warn" : "bad";
+  $("lag").innerHTML = lag.n ? `<span class="${lagCls}">p95 ${lag.p95Ms} ms</span> <span class="dim">· p50 ${lag.p50Ms} ms · last ${lag.lastMs} ms to start a trivial process</span><span class="tag-m">measured</span>` : `<span class="dim">—</span>`;
+  const bp = s.backendParallel || {};
+  $("slots").textContent = bp.slots ? `${bp.slots} request slot(s) per model · ${bp.source}` : "—";
+  const aliasCfg = s.aliases || {};
+  const jobs = Object.entries(aliasCfg).filter(([, v]) => v.kind === "job");
+  const cal = s.jobCalibration || {};
+  $("jobs").innerHTML = jobs.length
+    ? jobs.map(([k, v]) => { const c = cal[k] || {}; return `<tr><td>${esc(k)}</td><td class="dim">${esc(v.endpoint)}</td><td>${v.memoryGiB}G<span class="tag-e">estimate</span></td><td>${c.peakBytes ? gb(c.peakBytes) + '<span class="tag-m">measured</span>' : "—"}</td><td>${gb(c.rssBytes)}</td><td>${gb(c.availDropBytes)}</td><td>${c.runs ?? 0}</td><td class="dim">${c.updatedAt ? new Date(c.updatedAt).toLocaleString() : "—"}</td></tr>`; }).join("")
+    : `<tr><td colspan="8" class="empty">no job models configured</td></tr>`;
 
   const stats = sch.stats || {};
   $("stats").innerHTML = [
@@ -169,7 +191,7 @@ function render(s) {
   ].map(([l, v]) => `<div class="stat"><div class="v glow">${v}</div><div class="l">${l}</div></div>`).join("");
 
   $("queue").innerHTML = (sch.queue || []).length
-    ? sch.queue.map((q) => `<tr><td class="dim">${q.id}</td><td class="${q.priority === "interactive" ? "ok" : "violet"}">${q.priority}</td><td>${esc(q.label || q.key)}</td><td>${q.ctx || "—"}</td><td>${ago(q.waitingMs)}</td><td class="warn">${esc(q.reason || "")}</td></tr>`).join("")
+    ? sch.queue.map((q) => `<tr><td class="dim">${q.id}</td><td class="${q.priority === "interactive" ? "ok" : q.priority === "deferrable" ? "dim" : "violet"}">${q.priority}</td><td>${esc(q.label || q.key)}</td><td>${q.ctx || "—"}</td><td>${ago(q.waitingMs)}</td><td class="warn">${esc(q.reason || "")}</td></tr>`).join("")
     : `<tr><td colspan="6" class="empty">pit lane clear</td></tr>`;
 
   const aliasOf = {};
@@ -184,10 +206,15 @@ function render(s) {
           const mem = u.bytes ? gb(u.bytes) : "—";
           const tag = u.state === "ready" ? '<span class="tag-m">measured</span>' : u.state === "loading" ? '<span class="tag-e">estimate</span>' : "";
           const w = Math.round(((u.bytes || 0) / total) * 40);
-          return `<tr><td>${icon}</td><td>${name}</td><td class="${u.state === "ready" ? "ok" : u.state === "loading" ? "info" : "dim"}">${u.state}${u.draining ? " (draining)" : ""}</td><td>${u.ctx || "—"}</td><td>${mem}${tag}</td><td class="b-model bar">${"█".repeat(w)}</td><td>${u.inFlight}</td><td class="dim">${u.idleMs != null ? ago(u.idleMs) : "—"}</td><td>${u.loads}</td><td class="dim">${u.lastLoadMs ? ago(u.lastLoadMs) : "—"}</td></tr>`;
+          const waiting = (sch.queue || []).filter((q) => q.key === u.key).length;
+          const why = u.state === "ready"
+            ? (u.inFlight ? `serving ${u.inFlight}/${u.parallel || 1} slot(s)` : u.pin ? "pinned (warm helper)" : u.foreign ? "another client's model" : waiting ? `kept: ${waiting} request(s) queued` : "idle · evictable")
+            : u.state === "loading" ? (waiting ? `loading for ${waiting} queued request(s)` : "loading") : u.state === "failed" ? esc(u.reason || "failed") : waiting ? `queued: ${waiting}` : "—";
+          const growth = u.steadyBytes && u.steadyBytes > (u.loadedBytes || 0) * 1.05 ? ` <span class="dim">grew to ${gb(u.steadyBytes)}${u.maxResidentBytes ? ` · cap ${gb(u.maxResidentBytes)}` : ""}${u.recycles ? ` · recycled ${u.recycles}×` : ""}</span>` : "";
+          return `<tr><td>${icon}</td><td>${name}</td><td class="${u.state === "ready" ? "ok" : u.state === "loading" ? "info" : "dim"}">${u.state}${u.draining ? " (draining)" : ""}</td><td>${u.ctx || "—"}</td><td>${mem}${tag}${growth}</td><td class="b-model bar">${"█".repeat(w)}</td><td>${u.inFlight}</td><td class="dim">${u.idleMs != null ? ago(u.idleMs) : "—"}</td><td>${u.loads}</td><td class="dim">${u.lastLoadMs ? ago(u.lastLoadMs) : "—"}</td><td class="dim">${why}</td></tr>`;
         })
         .join("")
-    : `<tr><td colspan="10" class="empty">no models touched yet — send a request to /v1/chat/completions</td></tr>`;
+    : `<tr><td colspan="11" class="empty">no models touched yet — send a request to /v1/chat/completions</td></tr>`;
 }
 
 function logLine(e) {
