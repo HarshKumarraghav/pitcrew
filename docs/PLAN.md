@@ -4,7 +4,7 @@
 task has a check that proves it is done. Tick the box and append to the progress log when
 a task finishes. Architecture: `docs/ARCHITECTURE.md`.
 
-> NEXT → M7.0 instrument gateway (per-request prefill/decode/reasoning/tool timing), then M9.1 cap coder memory growth (8→17 GB). Full order at the end of M9. M4 runs are ALL-DONE (saturated); fold the table into BENCHMARKS.md with M7.2.
+> NEXT → M10.6 run `bench/load/run.ts --mode direct-default,direct-tuned,governed --repeats 3` once the machine is free (a `bench/run-all.sh` agent run from the previous session was still running on 11-04), judge against the M10 targets, then M7.0. Full order: see "Execution order (breakthrough branch)" below M9.
 
 **Objective:** maximise *successful coding tasks per unit of time and hardware* on a 24 GB
 Apple Silicon Mac, with **OpenCode as the only coding-agent interface**, local models only.
@@ -124,6 +124,32 @@ can load the same GGUF blob for a zero-download speed comparison; MLX only if me
 - [~] M6.3 CI (typecheck + tests, ubuntu + macos), `npm run build`, clean-clone install check
 - [ ] M6.4 rollback doc; final report
 
+## M10 — Load-test fixes (before M7): make Pit Crew win the load test honestly
+
+**Evidence (single runs, `bench/results/load/*.json`, 11-03):** total 83 s through Pit Crew vs 41 s direct at 32k;
+agent p95 better (20 s vs 34 s) but title p50 4.5 s vs 0.8 s. Causes from `/tmp/load-gw-governed.log`:
+R-a degraded mode capped *all* work at 1, so 0.2 s titles queued behind 3 s coder calls on an already-loaded model;
+R-b the 0.8B helper was refused at start (strict policy under "warn"); R-c background only ran at pressure "ok",
+which this Mac never reports while busy → `mid` waited 61–65 s for aging; R-d one request per model; R-e one run each.
+
+- [x] M10.1 **fast lane** (R-a): a request for a ready unit with a big enough window skips the global/degraded
+      cap (per-unit `parallel` still applies). Degraded mode still holds new loads and evicts idle models;
+      it now recovers after 20 s without critical/swapping (it used to wait for kernel "ok").
+- [x] M10.2 **warm helpers** (R-b): alias flag `warm: true` loads + pins at gateway start; models ≤ 1.5 GB
+      keep the `balanced` inactive-memory credit at "warn" (never at "critical").
+- [x] M10.3 **background gating** (R-c): background waits only at "critical" or while the swap-out rate is
+      above `thrashSwapoutMiBps`; a background request may evict an idle model once it has been idle 3 s
+      (`scheduler.backgroundEvictIdleMs`); 60 s aging kept.
+- [x] M10.4 **per-model parallelism** (R-d): `backend.parallel: "auto"` probes an external server with 4
+      concurrent requests at start-up (managed: env value). Unit slots = min(alias `parallel` ?? (small 2 / primary 1), server).
+      *Measured 11-04:* Ollama.app here serves **1 of 4** at once → R-d is not fixable from the gateway without
+      `OLLAMA_NUM_PARALLEL` on the server (which also multiplies the coder's KV). Reported, not hidden.
+- [x] M10.5 **load test v2** (R-e): `--mode a,b,c` interleaved, `--repeats N` (median + range), peak swap-out
+      rate, responsiveness probe (spawn `/usr/bin/true` every 1 s), seconds at critical, target table.
+- [ ] M10.6 **targets** (median of 3, vs direct-32k): total time ≤ +10% · title p50 ≤ 1 s · agent p95 better ·
+      swap-out ≤ direct · 0 s critical · responsiveness p95 better. Missed targets are reported as missed.
+- bug fixed on the way: thrash relief evicted *foreign* models (other clients) without the foreign-idle check.
+
 ## M7 — Throughput breakthrough: same model, more solved tasks per hour
 
 **Claim to earn:** same `qwen3.5:9b`, same Ollama, same busy 24 GB Mac → **≥ 2× solved tasks per
@@ -232,6 +258,23 @@ Budget: 24 GB total. macOS + apps ≈ 12 GB, so ≈ 10–12 GB is left for model
 tasks → M7.2 fair baseline + M8.1 Claude runs on the same tasks → speed levers (M7.3–7.5) and quality
 levers (M8.3), each judged on all three metrics → M9.2–9.5 → M7.6/M8.4 write-up.
 
+## Execution order (breakthrough branch, plan of 11-04)
+
+Local commits per milestone on branch `breakthrough`; never pushed.
+
+| step | milestone | what | machine time |
+|---|---|---|---|
+| 0 | housekeeping | git init, branch, this plan | — |
+| 1 | **M10** | load-test fixes + v2 load test, 3 repeats | ~15 min |
+| 2 | M7.0 | SSE telemetry → `~/.pitcrew/requests.jsonl`, time budget per task (gate: sums within 5%) | A–F rerun ~40 min |
+| 3 | M9.1 | coder growth diagnosis + idle reload cap (`maxResidentGiB`) | ~30 min |
+| 4 | M7.1 | harness fixes, tasks G–P, `selftest.mjs`, calibration run | ~1 h |
+| 5 | M7.2 + M8.1 | fair baseline ×3, Claude Opus 4.5/4.6/4.7 ×3, Pit Crew "before levers" ×3 | overnight |
+| 6 | M7.3–7.5 + M8.3 | levers (reasoning budget, prefix/compaction, retrieval, loop hints, test-driven repair) with ablations | ~6 h |
+| 7 | M8.2 | quality score + blind pack | — |
+| 8 | M9.2–9.5 | ballast jobs, whisper/Kokoro, `video` + `deferrable`, dashboard, S3 | ~2 h |
+| 9 | M7.6/7.7, M8.4 | ablation + headline (overnight), `docs/BENCHMARKS.md`, `docs/opencode-issue.md` (filing = user's call) | overnight |
+
 ---
 
 ## Decisions log
@@ -247,6 +290,8 @@ levers (M8.3), each judged on all three metrics → M9.2–9.5 → M7.6/M8.4 wri
 | Image/TTS job support kept as optional extension | built earlier on request; not on the coding critical path |
 | Breakthrough axis = throughput (solved tasks/hour), local-only, Ollama + qwen3.5 fixed (2026-11-03 Q&A) | decode is bandwidth-bound; most defensible claim that is not an upstream bug fix; no slow downloads |
 | Fair baseline includes the title fix | otherwise the headline is just the OpenCode title bug |
+| Loaded models bypass the degraded cap (fast lane) (11-04) | holding a request that needs no memory only adds latency; loads stay held |
+| Background gated on critical + swap-out rate, not kernel "warn" (11-04) | this Mac reports warn while idle; warn-gating starved background for 60 s |
 
 ## Progress log
 
@@ -271,3 +316,4 @@ levers (M8.3), each judged on all three metrics → M9.2–9.5 → M7.6/M8.4 wri
 - 11-03 M4 single runs done: mode A 5/6 1,166 s · B 6/6 1,257 s · C 6/6 1,535 s vs M1 5/6 2,390 s; gain = title wait removed, work time not improved → task set saturated
 - 11-03 Q&A: breakthrough axis = throughput, local-only, Ollama+qwen3.5 fixed, harder in-repo tasks → M7 plan written
 - 11-03 goals set by user: (1) quality comparable to Claude 4.5/4.6/4.7, (2) faster than plain OpenCode+Ollama, (3) coding+voice+image/video models without eating RAM → Goals table, M8, M9 added; observed coder at 17 GB, swap 36.8/37.9 GB
+- 11-04 Phase 0: git init, initial commit on `main`, branch `breakthrough`. M10.1–M10.5 implemented (55/55 tests). Live probe: Ollama.app serves 1 request per model at a time. Found `bench/run-all.sh` (previous session) still running agent repeat 3; a gateway smoke test at 11:09 briefly evicted its coder once (r3 task A/B timing slightly affected) → foreign-eviction bug fixed. Load runs wait until it finishes.

@@ -14,6 +14,7 @@ function machine(opts: { total?: number; available: number; gpu?: number; queueT
     inactive: 0,
     gpu: opts.gpu ?? 18 * G,
     state: "ok" as ThrashState,
+    thrashing: false,
   };
   const log: string[] = [];
   const view = (): MemoryView => ({
@@ -23,6 +24,7 @@ function machine(opts: { total?: number; available: number; gpu?: number; queueT
     inactiveBytes: mem.inactive,
     gpuLimitBytes: mem.gpu,
     state: mem.state,
+    thrashing: mem.thrashing,
   });
   const sched = new Scheduler(
     { osReserveBytes: 4 * G, minFreeBytes: 1 * G, probeLagMs: 0, maxConcurrent: 2, queueTimeoutMs: opts.queueTimeoutMs ?? 5000, idleUnloadMs: 0, criticalHoldMs: 1000, recoverMs: 1000, agingMs: 60_000 },
@@ -267,4 +269,112 @@ test("a primary model may load past soft headroom, but never past the budget or 
   assert.equal(blocked, true, "critical pressure still holds even the primary");
   m.mem.state = "ok";
   void p1;
+});
+
+// ───────────── M10: load-test fixes ─────────────
+
+test("fast lane: a loaded model keeps serving while degraded; new loads still hold", async () => {
+  const m = machine({ available: 12 * G });
+  (await m.sched.acquire(m.req("small", 1 * G, { parallel: 2, pin: true }))).release();
+  const coder = await m.sched.acquire(m.req("coder", 6 * G));
+  m.mem.state = "critical";
+  m.advance(10);
+  m.advance(1500);
+  await flush();
+  assert.equal(m.sched.snapshot().degraded, true);
+  m.mem.state = "warn";
+  // One coder request is running and the degraded cap is 1, yet both small requests start at once.
+  const a = await m.sched.acquire(m.req("small", 1 * G, { parallel: 2, pin: true }));
+  const b = await m.sched.acquire(m.req("small", 1 * G, { parallel: 2, pin: true }));
+  let third = false;
+  const c = m.sched.acquire(m.req("small", 1 * G, { parallel: 2, pin: true })).then((l) => { third = true; return l; });
+  // A model that is not loaded still waits for a slot.
+  let loaded = false;
+  const other = m.sched.acquire(m.req("other", 1 * G)).then((l) => { loaded = true; return l; });
+  await flush();
+  assert.equal(third, false, "per-model slots (parallel=2) still apply");
+  assert.equal(loaded, false, "loads stay behind the degraded cap");
+  a.release();
+  (await c).release();
+  b.release();
+  coder.release();
+  (await other).release();
+  assert.equal(loaded, true);
+});
+
+test("small helpers use the compressible-memory credit at warn, never at critical", async () => {
+  const m = machine({ available: 2 * G });
+  m.mem.inactive = 2 * G;
+  m.mem.state = "warn";
+  // 2G free − 1G floor = 1G strict headroom; + ½ of 2G inactive = 2G balanced headroom.
+  const l = await m.sched.acquire(m.req("small", 1.2 * G));
+  l.release();
+  assert.ok(m.log.includes("load:small"));
+  let big = false;
+  m.sched.acquire(m.req("mid", 1.8 * G)).then((x) => { big = true; x.release(); }).catch(() => undefined);
+  await flush();
+  assert.equal(big, false, "models above the small-model size keep the strict policy at warn");
+});
+
+test("background work runs at warn and pauses only while apps are swapped out", async () => {
+  const m = machine({ available: 12 * G });
+  m.mem.state = "warn";
+  (await m.sched.acquire(m.req("mid", 2 * G, { priority: "background" }))).release();
+  m.mem.thrashing = true;
+  let ran = false;
+  const p = m.sched.acquire(m.req("mid", 2 * G, { priority: "background" })).then((l) => { ran = true; l.release(); });
+  await flush();
+  assert.equal(ran, false);
+  assert.match(m.sched.snapshot().queue[0]?.reason ?? "", /swapped out/);
+  m.mem.thrashing = false;
+  m.advance(10);
+  await p;
+});
+
+test("background requests evict an idle model only after it has been idle for 3 s", async () => {
+  const m = machine({ available: 9 * G, queueTimeoutMs: 60_000 });
+  (await m.sched.acquire(m.req("coder", 6 * G))).release();
+  let ran = false;
+  const p = m.sched.acquire(m.req("mid", 4 * G, { priority: "background" })).then((l) => { ran = true; l.release(); });
+  await flush();
+  assert.equal(ran, false, "coder was used a moment ago (between agent steps)");
+  m.advance(1000);
+  await flush();
+  assert.equal(ran, false);
+  m.advance(2500);
+  await p;
+  assert.deepEqual(m.log, ["load:coder", "unload:coder", "load:mid"]);
+});
+
+test("degraded mode recovers after a calm period even if the kernel stays at warn", async () => {
+  const m = machine({ available: 12 * G });
+  m.mem.state = "critical";
+  m.advance(10);
+  m.advance(1500);
+  assert.equal(m.sched.snapshot().degraded, true);
+  m.mem.state = "warn";
+  m.advance(10);
+  m.advance(1500);
+  assert.equal(m.sched.snapshot().degraded, false);
+});
+
+test("thrash relief leaves a foreign model alone until it has been idle long enough", async () => {
+  const m = machine({ available: 12 * G });
+  let unloaded = 0;
+  m.sched.observeResident([{ key: "other:9b", governed: false, bytes: 8 * G, activity: 1 }]);
+  m.sched.setForeignOps("other:9b", { load: async () => undefined, unload: async () => void unloaded++ });
+  m.mem.state = "critical";
+  m.advance(10);
+  m.advance(1500);
+  await flush();
+  assert.equal(unloaded, 0, "just seen: another client may be using it");
+  m.mem.state = "ok";
+  m.advance(30_000);
+  m.advance(1500);
+  assert.equal(m.sched.snapshot().degraded, false);
+  m.mem.state = "critical";
+  m.advance(40_000);
+  m.advance(1500);
+  await flush();
+  assert.equal(unloaded, 1);
 });

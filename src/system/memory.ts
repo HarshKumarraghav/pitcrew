@@ -160,6 +160,11 @@ export class MemoryMonitor {
     this.pollMs = opts.pollMs;
   }
 
+  /** Apps are being pushed to swap faster than the configured threshold (smoothed). */
+  get thrashing(): boolean {
+    return this.swapoutBps > this.thrashBps;
+  }
+
   async sample(): Promise<MemorySnapshot> {
     const s = await this.probe.read();
     if (this.prev) {
@@ -170,7 +175,7 @@ export class MemoryMonitor {
     }
     this.prev = s;
     this.latest = s;
-    const thrashing = this.swapoutBps > this.thrashBps;
+    const thrashing = this.thrashing;
     this.state =
       s.pressure === "critical" || (thrashing && s.pressure === "warn")
         ? "critical"

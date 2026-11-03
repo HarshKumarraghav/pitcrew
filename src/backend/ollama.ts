@@ -88,6 +88,31 @@ export class OllamaClient {
     });
   }
 
+  /**
+   * How many requests the server runs on one loaded model at once (OLLAMA_NUM_PARALLEL, up to n).
+   * Sends n short concurrent generations and counts how many were streaming at the same moment.
+   */
+  async probeParallel(model: string, n = 4): Promise<{ parallel: number; detail: string }> {
+    const one = async () => {
+      const res = await fetch(this.url + "/api/generate", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ model, prompt: "Count from 1 to 40, separated by spaces.", stream: true, think: false, keep_alive: -1, options: { num_predict: 40, temperature: 0 } }),
+        signal: AbortSignal.timeout(120_000),
+      });
+      if (!res.ok || !res.body) throw new BackendError(`probe: ${res.status}`, res.status);
+      let first = 0;
+      for await (const _ of res.body as unknown as AsyncIterable<Uint8Array>) first ||= performance.now();
+      return { first, end: performance.now() };
+    };
+    const runs = await Promise.all(Array.from({ length: n }, one));
+    // Peak number of requests that had produced output and not yet finished at the same time.
+    let peak = 0;
+    for (const r of runs) peak = Math.max(peak, runs.filter((o) => o.first <= r.first && o.end > r.first).length);
+    const span = (Math.max(...runs.map((r) => r.end)) - Math.min(...runs.map((r) => r.first))) / 1000;
+    return { parallel: Math.max(1, peak), detail: `${peak} of ${n} concurrent requests overlapped (${span.toFixed(1)} s)` };
+  }
+
   /** Create a derived model that shares the parent's weight blobs. */
   async create(model: string, from: string, parameters: Record<string, unknown>): Promise<void> {
     await this.json("/api/create", {

@@ -14,6 +14,8 @@ export interface MemoryView {
   inactiveBytes: number;
   gpuLimitBytes?: number;
   state: ThrashState;
+  /** Apps are being pushed to swap right now (smoothed swap-out rate above the thrash threshold). */
+  thrashing?: boolean;
 }
 
 export interface UnitOps {
@@ -39,6 +41,8 @@ export interface Unit {
   failedUntil: number;
   loads: number;
   lastLoadMs: number;
+  /** Request slots on this unit (from the last request; 1 for jobs). */
+  parallel: number;
   ops?: UnitOps;
   /** For foreign units: last time the backend reported activity. */
   lastActivity: number;
@@ -120,6 +124,16 @@ export interface SchedulerOptions {
   failCooldownMs: number;
   criticalHoldMs: number;
   recoverMs: number;
+  /** Models up to this size may use the compressible-memory credit at "warn" (never at "critical"). */
+  smallModelBytes: number;
+  /** A background request may evict a model only after it has been idle this long. */
+  backgroundEvictIdleMs: number;
+  /**
+   * Requests for a model that is already loaded with a big enough window skip the global (and
+   * degraded) concurrency cap; they are limited by the model's own slots. Those requests need no
+   * new memory, so holding them back only adds latency.
+   */
+  fastLane: boolean;
 }
 
 export const SCHED_DEFAULTS: Omit<SchedulerOptions, "osReserveBytes" | "minFreeBytes"> = {
@@ -135,6 +149,9 @@ export const SCHED_DEFAULTS: Omit<SchedulerOptions, "osReserveBytes" | "minFreeB
   failCooldownMs: 30_000,
   criticalHoldMs: 3000,
   recoverMs: 20_000,
+  smallModelBytes: 1.5 * GiB,
+  backgroundEvictIdleMs: 3000,
+  fastLane: true,
 };
 
 interface Pending {
@@ -307,7 +324,7 @@ export class Scheduler {
     return {
       budgetBytes: this.budget(),
       committedBytes: this.committed(),
-      headroomBytes: m ? this.headroom(m) : undefined,
+      headroomBytes: m ? this.headroom(m, this.policyFor(Number.POSITIVE_INFINITY)) : undefined,
       running: this.running,
       maxConcurrent: this.effectiveMaxConcurrent(),
       degraded: this.degraded,
@@ -328,7 +345,7 @@ export class Scheduler {
   // ───────────────────────────── memory math ─────────────────────────────
 
   /** Memory the next load may take, net of charges the probe has not seen yet. */
-  headroom(m: MemoryView, policy: MemoryPolicy = this.policyNow()): number {
+  headroom(m: MemoryView, policy: MemoryPolicy = this.policyFor(Number.POSITIVE_INFINITY)): number {
     if (policy === "aggressive") return Number.POSITIVE_INFINITY;
     let unseen = 0;
     for (const u of this.units.values()) {
@@ -341,9 +358,15 @@ export class Scheduler {
     return m.availableBytes - this.opts.minFreeBytes + bonus - unseen;
   }
 
-  private policyNow(): MemoryPolicy {
+  /** The policy for one load: the configured one when calm, "strict" under pressure. */
+  private policyFor(need: number, explicit?: MemoryPolicy): MemoryPolicy {
+    if (explicit) return explicit;
     const st = this.mem()?.state ?? "ok";
-    return st === "ok" ? this.opts.policy : "strict";
+    if (st === "ok") return this.opts.policy;
+    // Busy Macs sit at "warn" while idle. A ~1 GB helper does not tip that over, so it keeps the
+    // compressible-memory credit there; nothing gets it at "critical".
+    if (st === "warn" && need <= this.opts.smallModelBytes && this.opts.policy !== "strict") return "balanced";
+    return "strict";
   }
 
   admission(key: string, need: number, forPriority: Priority, policy?: MemoryPolicy): Admission {
@@ -352,7 +375,7 @@ export class Scheduler {
     if (need > budget) return { kind: "never", reason: `needs ${fmt(need)}, budget ${fmt(budget)}` };
     if (m?.state === "critical") return { kind: "wait", reason: "memory is thrashing; holding new loads" };
     const committed = this.committed();
-    const head = m ? this.headroom(m, policy ?? this.policyNow()) : Number.POSITIVE_INFINITY;
+    const head = m ? this.headroom(m, this.policyFor(need, policy)) : Number.POSITIVE_INFINITY;
     if (committed + need <= budget && need <= head) return { kind: "fits" };
 
     const rank = (p: Priority) => (p === "interactive" ? 0 : 1);
@@ -369,6 +392,8 @@ export class Scheduler {
           u.kind === "llm" &&
           !u.pin &&
           !wanted.has(u.key) &&
+          // Background work must not kick out a model between two steps of an agent.
+          (forPriority !== "background" || this.now() - u.lastUsed >= this.opts.backgroundEvictIdleMs) &&
           (!u.foreign || (this.opts.evictForeign && u.ops && this.now() - u.lastUsed > this.opts.foreignIdleMs)),
       )
       .sort((a, b) => rank(b.priority) - rank(a.priority) || a.lastUsed - b.lastUsed);
@@ -422,20 +447,20 @@ export class Scheduler {
   }
 
   private dispatchOnce(): void {
-    const memState = this.mem()?.state ?? "ok";
+    const m = this.mem();
+    const memState = m?.state ?? "ok";
+    // Background work waits only while memory is critical or apps are being swapped out, not at
+    // the kernel's "warn" level, which a busy Mac reports even when idle.
+    const bgHold = memState === "critical" ? "memory critical" : m?.thrashing ? "apps are being swapped out" : undefined;
     const interactiveWaiting = this.queue.some((p) => this.effectivePriority(p) === "interactive");
     // Draining is re-derived every pass so an aborted grow request cannot block a unit forever.
     for (const u of this.units.values()) u.draining = false;
     // Each loop either starts an item, kicks a load, or skips; plans already made this pass
     // reserve their memory so two loads are never admitted against the same headroom.
     for (const p of this.ordered()) {
-      if (this.running >= this.effectiveMaxConcurrent()) {
-        p.waitReason ??= "all slots busy";
-        continue;
-      }
       const prio = this.effectivePriority(p);
-      if (prio === "background" && memState !== "ok") {
-        p.waitReason = `background paused (memory ${memState})`;
+      if (prio === "background" && bgHold) {
+        p.waitReason = `background paused (${bgHold})`;
         continue;
       }
       if (prio === "background" && this.opts.strictPriority && interactiveWaiting) {
@@ -443,6 +468,12 @@ export class Scheduler {
         continue;
       }
       const u = this.unitFor(p.req);
+      const fast =
+        this.opts.fastLane && u.kind === "llm" && u.state === "ready" && u.ctx >= p.req.ctx && !u.draining && !this.busy.has(u.key);
+      if (!fast && this.running >= this.effectiveMaxConcurrent()) {
+        p.waitReason ??= "all slots busy";
+        continue;
+      }
       if (this.busy.has(u.key)) {
         p.waitReason = u.state === "loading" ? "loading model" : "model busy (load/unload)";
         continue;
@@ -528,6 +559,7 @@ export class Scheduler {
       this.units.set(req.key, u);
     }
     u.ops = req.ops;
+    u.parallel = req.parallel;
     if (req.priority === "interactive") u.priority = "interactive";
     if (req.pin) u.pin = true;
     return u;
@@ -550,6 +582,7 @@ export class Scheduler {
       failedUntil: 0,
       loads: 0,
       lastLoadMs: 0,
+      parallel: 1,
       lastActivity: 0,
     };
   }
@@ -714,15 +747,24 @@ export class Scheduler {
       }
     }
 
-    const st = this.mem()?.state ?? "ok";
+    const m = this.mem();
+    const st = m?.state ?? "ok";
     if (st === "critical") {
       this.criticalSince ||= now;
       this.okSince = 0;
       if (!this.degraded && now - this.criticalSince >= this.opts.criticalHoldMs) {
         this.degraded = true;
-        this.emit("thrash", "memory critical: concurrency → 1, evicting idle models, holding loads");
+        this.emit("thrash", "memory critical: holding new loads, evicting idle models (loaded models keep serving)");
         const idle = [...this.units.values()]
-          .filter((u) => u.state === "ready" && u.inFlight === 0 && !u.pin && !this.busy.has(u.key) && (!u.foreign || u.ops))
+          .filter(
+            (u) =>
+              u.state === "ready" &&
+              u.inFlight === 0 &&
+              !u.pin &&
+              !this.busy.has(u.key) &&
+              // Another client's model: only once it has been idle long enough (it may be mid-session).
+              (!u.foreign || (u.ops && now - u.lastUsed > this.opts.foreignIdleMs)),
+          )
           .sort((a, b) => (a.priority === "background" ? -1 : 1) - (b.priority === "background" ? -1 : 1));
         void (async () => {
           for (const u of idle) {
@@ -734,7 +776,10 @@ export class Scheduler {
       }
     } else {
       this.criticalSince = 0;
-      if (st === "ok") this.okSince ||= now;
+      // Calm = not critical and not swapping. "warn" alone counts as calm: on a busy Mac the
+      // kernel reports it while idle, and waiting for "ok" kept the gateway degraded for minutes.
+      if (m?.thrashing) this.okSince = 0;
+      else this.okSince ||= now;
       if (this.degraded && this.okSince && now - this.okSince >= this.opts.recoverMs) {
         this.degraded = false;
         this.emit("thrash", "memory recovered: normal scheduling resumed");

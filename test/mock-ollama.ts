@@ -10,7 +10,18 @@ export interface MockModel {
 }
 
 /** A fake Ollama that tracks loaded models and streams OpenAI-style responses. */
-export async function startMockOllama(models: MockModel[], opts: { tokenDelayMs?: number } = {}) {
+export async function startMockOllama(models: MockModel[], opts: { tokenDelayMs?: number; parallel?: number } = {}) {
+  // Requests the mock serves at once per model (OLLAMA_NUM_PARALLEL); the rest wait in line.
+  let active = 0;
+  const waiting: (() => void)[] = [];
+  const slot = async () => {
+    while (active >= (opts.parallel ?? 1)) await new Promise<void>((r) => waiting.push(r));
+    active++;
+    return () => {
+      active--;
+      waiting.shift()?.();
+    };
+  };
   const created = new Map<string, { from: string; num_ctx: number }>();
   const loaded = new Map<string, number>();
   const calls: string[] = [];
@@ -67,6 +78,17 @@ export async function startMockOllama(models: MockModel[], opts: { tokenDelayMs?
       if (body.keep_alive === 0) loaded.delete(body.model);
       else loaded.set(body.model, sizeOf(body.model));
       return json(200, { done: true, load_duration: 5_000_000 });
+    }
+    if (url === "/api/generate" && body.prompt) {
+      const done = await slot();
+      if (!loaded.has(body.model)) loaded.set(body.model, sizeOf(body.model));
+      res.writeHead(200, { "content-type": "application/x-ndjson" });
+      for (let i = 0; i < 5; i++) {
+        res.write(JSON.stringify({ model: body.model, response: `${i} `, done: false }) + "\n");
+        await new Promise((r) => setTimeout(r, opts.tokenDelayMs ?? 0));
+      }
+      res.end(JSON.stringify({ model: body.model, response: "", done: true, eval_count: 5 }) + "\n");
+      return done();
     }
     if (url === "/v1/chat/completions") {
       if (!loaded.has(body.model)) loaded.set(body.model, sizeOf(body.model));

@@ -59,7 +59,7 @@ async function main() {
       let managed: ManagedOllama | undefined;
       if (config.backend.managed) {
         managed = new ManagedOllama(config.backend.url, {
-          OLLAMA_NUM_PARALLEL: String(config.backend.parallel),
+          OLLAMA_NUM_PARALLEL: String(config.backend.parallel === "auto" ? 1 : config.backend.parallel),
           OLLAMA_MAX_LOADED_MODELS: "8",
           OLLAMA_KEEP_ALIVE: "-1",
           ...config.backend.env,
@@ -72,6 +72,7 @@ async function main() {
       const gw = createGateway(config, { monitor });
       gw.scheduler.start();
       await gw.registry.refresh().catch((e) => console.error(`[pitcrew] backend not reachable yet: ${(e as Error).message}`));
+      void gw.warmUp().catch((e) => console.error(`[pitcrew] warm-up failed: ${(e as Error).message}`));
       gw.server.listen(config.listen.port, config.listen.host, () => {
         const s = monitor.latest!;
         console.log(`pitcrew gateway  http://${config.listen.host}:${config.listen.port}  (dashboard at /, OpenAI API at /v1)`);

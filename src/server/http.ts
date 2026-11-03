@@ -21,6 +21,8 @@ export interface Gateway {
   registry: Registry;
   monitor: MemoryMonitor;
   metrics: Metrics;
+  /** Load and pin `warm` aliases; probes the backend's parallel slots on the first one. */
+  warmUp(): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -95,6 +97,7 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
       inactiveBytes: s.inactiveBytes,
       gpuLimitBytes: s.gpuLimitBytes,
       state: monitor.state,
+      thrashing: monitor.thrashing,
     };
   };
   const scheduler = new Scheduler(
@@ -107,6 +110,8 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
       queueTimeoutMs: cfg.scheduler.queueTimeoutMs,
       idleUnloadMs: cfg.scheduler.idleUnloadMs,
       strictPriority: cfg.scheduler.strictPriority,
+      fastLane: cfg.scheduler.fastLane,
+      backgroundEvictIdleMs: cfg.scheduler.backgroundEvictIdleMs,
     },
     memView,
     () => monitor.sample(),
@@ -127,6 +132,18 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
 
   // ─────────────── lease helpers ───────────────
 
+  /**
+   * Slots the backend gives every loaded model (OLLAMA_NUM_PARALLEL). The backend allocates KV
+   * for all of them, so memory estimates use this; per-model request caps never exceed it.
+   */
+  let serverParallel = cfg.backend.parallel === "auto" ? 1 : cfg.backend.parallel;
+  let parallelSource = cfg.backend.parallel !== "auto" ? "config" : cfg.backend.managed ? "managed (auto → 1)" : "not probed yet";
+
+  function slotsFor(r: Resolved, weightsBytes: number): number {
+    const want = r.spec.parallel ?? (r.spec.primary || weightsBytes > 3.5 * GiB ? 1 : 2);
+    return Math.max(1, Math.min(want, serverParallel));
+  }
+
   function priorityOf(req: IncomingMessage, fallback: Priority): Priority {
     const h = String(req.headers["x-pitcrew-priority"] ?? "").toLowerCase();
     return h === "background" || h === "interactive" ? h : fallback;
@@ -134,15 +151,16 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
 
   async function leaseLlm(r: Resolved, ctx: number, priority: Priority, signal: AbortSignal): Promise<Lease> {
     const fp = await registry.footprint(r.base);
-    const parallel = cfg.backend.parallel;
+    const parallel = slotsFor(r, fp.weightsBytes);
+    const kvSlots = serverParallel;
     return scheduler.acquire({
       key: r.base,
       kind: "llm",
       priority,
       ctx,
-      estimate: (c) => fp.estimate(c, parallel),
+      estimate: (c) => fp.estimate(c, kvSlots),
       parallel,
-      pin: r.spec.pin,
+      pin: r.spec.pin || r.spec.warm,
       policy: r.spec.primary ? "aggressive" : undefined,
       signal,
       label: r.alias ? `${r.alias}(${r.base})` : r.base,
@@ -154,7 +172,7 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
           const ps = await client.ps().catch(() => []);
           const hit = ps.find((m) => m.name === variant || m.model === variant);
           if (hit?.size) {
-            registry.calibrate(r.base, { ctx: c, parallel, bytes: hit.size });
+            registry.calibrate(r.base, { ctx: c, parallel: kvSlots, bytes: hit.size });
             return { bytes: hit.size };
           }
           return {};
@@ -181,7 +199,7 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
     const u = scheduler.units.get(base);
     if (u?.state === "ready" || u?.state === "loading") return true;
     const fp = await registry.footprint(base);
-    const need = fp.estimate(spec.minCtx ?? cfg.context.buckets[0] ?? 8192, cfg.backend.parallel);
+    const need = fp.estimate(spec.minCtx ?? cfg.context.buckets[0] ?? 8192, serverParallel);
     return scheduler.admission(base, need, "background").kind === "fits";
   }
 
@@ -389,6 +407,7 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
     return {
       version: "0.1.0",
       backend: cfg.backend.url,
+      backendParallel: { slots: serverParallel, source: parallelSource },
       router: cfg.router,
       memory: s && {
         totalBytes: s.totalBytes,
@@ -422,6 +441,34 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
     for (const c of sseClients) c.write(`event: state\ndata: ${payload}\n\n`);
   }, 1000);
   sseTimer.unref();
+
+  // ─────────────── warm helpers ───────────────
+
+  async function warmUp(): Promise<void> {
+    let probe = cfg.backend.parallel === "auto" && !cfg.backend.managed;
+    for (const [alias, spec] of Object.entries(cfg.models)) {
+      if (isJob(spec) || !spec.warm) continue;
+      const r = await registry.resolve(alias);
+      const ctx = Math.max(spec.minCtx ?? 0, cfg.context.buckets[0] ?? 8192);
+      const lease = await leaseLlm(r, ctx, "interactive", new AbortController().signal);
+      try {
+        if (probe) {
+          probe = false;
+          const variant = loadedVariant.get(r.base);
+          if (variant) {
+            const p = await client.probeParallel(variant, 4);
+            serverParallel = p.parallel;
+            parallelSource = `probed on ${alias}: ${p.detail}`;
+          }
+        }
+      } catch (e) {
+        parallelSource = `probe failed (${(e as Error).message.slice(0, 80)}); assuming 1`;
+      } finally {
+        lease.release({ ok: true });
+      }
+      if (process.env.PITCREW_LOG !== "quiet") console.log(`warm    ${alias}(${r.base}) resident and pinned · backend slots ${serverParallel} (${parallelSource})`);
+    }
+  }
 
   // ─────────────── reconcile with the backend ───────────────
 
@@ -522,6 +569,7 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
     registry,
     monitor,
     metrics,
+    warmUp,
     close: async () => {
       clearInterval(sseTimer);
       clearInterval(reconcileTimer);

@@ -31,6 +31,16 @@ export interface ModelAlias {
    * under the normal memory policy, so nothing piles on top of it.
    */
   primary?: boolean;
+  /**
+   * Load at gateway start and keep resident (implies pin). Meant for small helpers (titles,
+   * summaries) so their requests never wait for a load.
+   */
+  warm?: boolean;
+  /**
+   * Requests this model may serve at once. Defaults to 2 for small models (≤ 3.5 GB weights) and
+   * 1 for the primary/large ones; never more than the backend allows (backend.parallel).
+   */
+  parallel?: number;
   /** Optional sampling defaults baked into the derived model. */
   parameters?: Record<string, number | string>;
 }
@@ -58,8 +68,11 @@ export interface Config {
     managed: boolean;
     /** Extra env for the managed server (e.g. OLLAMA_KV_CACHE_TYPE). */
     env: Record<string, string>;
-    /** Parallel request slots per loaded model; mirrors OLLAMA_NUM_PARALLEL. */
-    parallel: number;
+    /**
+     * Request slots the backend gives each loaded model (OLLAMA_NUM_PARALLEL). A managed server is
+     * started with this value ("auto" → 1). For an external server, "auto" probes it at start-up.
+     */
+    parallel: number | "auto";
     /** KV cache element type used for footprint estimates. */
     kvCacheType: "f16" | "q8_0" | "q4_0";
   };
@@ -84,6 +97,10 @@ export interface Config {
     idleUnloadMs: number;
     /** Background requests are only dispatched when no interactive request is waiting. */
     strictPriority: boolean;
+    /** Requests for an already-loaded model skip the global concurrency cap (per-model slots still apply). */
+    fastLane: boolean;
+    /** A background request may evict a model only after it has been idle this long. */
+    backgroundEvictIdleMs: number;
   };
   context: {
     buckets: number[];
@@ -106,7 +123,7 @@ export const DEFAULTS: Config = {
     url: "http://127.0.0.1:11434",
     managed: false,
     env: {},
-    parallel: 1,
+    parallel: "auto",
     kvCacheType: "f16",
   },
   memory: {
@@ -121,6 +138,8 @@ export const DEFAULTS: Config = {
     queueTimeoutMs: 10 * 60_000,
     idleUnloadMs: 15 * 60_000,
     strictPriority: true,
+    fastLane: true,
+    backgroundEvictIdleMs: 3000,
   },
   context: {
     buckets: [8192, 16384, 32768, 65536, 131072],
@@ -180,7 +199,7 @@ export function validate(c: Config): void {
   if (!c.context.buckets.length) throw new Error("context.buckets must not be empty");
   c.context.buckets.sort((a, b) => a - b);
   if (c.scheduler.maxConcurrent < 1) throw new Error("scheduler.maxConcurrent must be >= 1");
-  if (c.backend.parallel < 1) throw new Error("backend.parallel must be >= 1");
+  if (c.backend.parallel !== "auto" && !(c.backend.parallel >= 1)) throw new Error('backend.parallel must be >= 1 or "auto"');
   if (!["A", "B", "C"].includes(c.router.mode)) throw new Error("router.mode must be A, B or C");
   if (c.router.mode === "B" && c.scheduler.maxConcurrent > 1) {
     // Mode B is defined as predominantly sequential heavy inference.
@@ -193,6 +212,7 @@ export function validate(c: Config): void {
       continue;
     }
     if (!a.model) throw new Error(`models.${name}.model is required`);
+    if (a.parallel !== undefined && !(a.parallel >= 1)) throw new Error(`models.${name}.parallel must be >= 1`);
     if (a.model.endsWith(":cloud") || a.model.endsWith("-cloud")) {
       throw new Error(`models.${name}: cloud models are not allowed (${a.model})`);
     }
