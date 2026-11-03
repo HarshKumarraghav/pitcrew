@@ -206,7 +206,7 @@ console.log(`\nTasks: ${TASKS.map((k) => `${k} ${taskNames.get(k) ?? ""}`.trim()
 // Load benchmark (unchanged)
 
 if (existsSync(LOAD)) {
-  const files = readdirSync(LOAD).filter((f) => f.endsWith(".json")).sort();
+  const files = readdirSync(LOAD).filter((f) => f.endsWith(".json") && !f.startsWith("summary-")).sort();
   const latest = new Map();
   for (const f of files) latest.set(f.split("-20")[0], JSON.parse(readFileSync(join(LOAD, f), "utf8")));
   console.log("\n## Load benchmark (6 concurrent clients × 3 rounds over 3 models)\n");
