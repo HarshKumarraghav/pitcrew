@@ -33,8 +33,9 @@ and 24.
 
 | path | what lives there |
 |---|---|
-| `src/cli.ts` | the `pitcrew` command: `serve`, `audit`, `garage`, `scout`, `context`, `status`, `learn`, `tune`, `clean` |
+| `src/cli.ts` | the `pitcrew` command: `init`, `doctor`, `serve`, `audit`, `garage`, `scout`, `context`, `status`, `learn`, `tune`, `clean` |
 | `src/config.ts` | config types, defaults (`DEFAULTS`), loading and validation |
+| `src/setup/` | `init` (model catalog and recommendation by memory tier, pulls, config + OpenCode profile) and `doctor` |
 | `src/scheduler/` | RAMbo: admission against real headroom, LRU eviction, priorities, queueing, thrash control |
 | `src/server/http.ts` | the OpenAI/Ollama-compatible gateway, `/governor/*` endpoints, warm-up, reconcile loop |
 | `src/server/router.ts` | the `auto` model: helper vs agent classification, modes A/B/C |

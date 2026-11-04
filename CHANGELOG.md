@@ -38,6 +38,15 @@ First public release. Tested on macOS 26 / Apple M5 24 GB / Ollama 0.40 / OpenCo
 
 ### Added
 
+- `pitcrew init`: looks at total and free memory, Ollama, OpenCode and pulled models, recommends a
+  coder + light model for the machine's memory tier (8 GB to 48 GB+), shows the plan, then pulls
+  the models and writes `~/.pitcrew/config.json` and an OpenCode profile. `--json` for scripts and
+  agents, `--yes`, `--dry-run`, `--force`, `--coder`, `--light`.
+- `pitcrew doctor`: checks config, router aliases, Ollama, pulled models, memory budget, the
+  gateway (with a one-token request through `auto`), OpenCode and its profile; prints a fix for
+  each problem.
+- `docs/AGENT_SETUP.md` and `AGENTS.md`: a prompt and step-by-step instructions so any coding agent
+  can set Pit Crew up for a user.
 - **Gateway.** OpenAI- and Ollama-compatible endpoint on `127.0.0.1:11500` in front of Ollama:
   chat/completions, completions, responses, embeddings, `/api/*` passthrough. Local only: refuses
   `:cloud` models, makes no outbound calls.

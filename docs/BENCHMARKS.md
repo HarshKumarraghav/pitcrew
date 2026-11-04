@@ -194,3 +194,36 @@ Diagnosis of the 11-03 OpenCode failure: 12 manual repros of the same task, each
   (`pmset -g log`). Runs overlapping a sleep measure nothing and are marked `invalid` and excluded.
   An earlier explanation of Claude Code "stalls" as rate limiting was wrong — they were sleep.
 - Machine state per task is logged in `bench/agent/results/machine-state.log`.
+
+## Final comparison — local Pit Crew vs Claude Code (valid runs only, 11-03/04)
+
+Same tasks, fixture, prompts, hidden verifiers and 900 s limit. A–F = routine (codegen + tests, repo
+understanding, multi-file feature, debugging, tool execution, multi-step with a trap); G–P = hard
+(route collisions, cross-layer renames, order-dependent tests, misleading stack traces, config + code,
+off-by-one across layers, performance fix, API-preserving refactor, git-history investigation).
+Runs that overlapped a machine sleep are excluded (`invalid`).
+
+| setup | where | routine A–F | hard G–P | median time per passed task (A–F · G–P) | cost |
+|---|---|---|---|---|---|
+| OpenCode → Ollama, qwen3.5:9b (plain) | local | 11/18 (61%) | 1/8 (13%) | 341 s · 89 s | $0 |
+| **OpenCode → Pit Crew → qwen3.5:9b** | local | **11/12 (92%)** (mode C) | 1/8 (13%) ("today") · 1/9 (11%) ("levers-all") | 123 s · 98–190 s | $0 |
+| Claude Code + Opus 4.5 | cloud | 18/18 (100%) | 28/30 (93%) | 36 s · 64 s | ≈ $17 API-equiv. for 3 × 16 tasks |
+| Claude Code + Opus 4.6 | cloud | 18/18 (100%) | 27/30 (90%) | 31 s · 79 s | ≈ $17 |
+| Claude Code + Opus 4.7 | cloud | 18/18 (100%) | 30/30 (100%) | 53 s · 92 s | ≈ $31 |
+
+Notes
+- Local hard-task results are one run per setup (G–P, interleaved by `bench/agent/interleave.sh`);
+  routine results are 2–3 runs. Claude results are 3 runs per model.
+- Claude Code ran isolated (`--setting-sources project,local`, no MCP, no web tools) with an
+  allow-list and `dontAsk` permissions — stricter than the local runs, which allowed any shell
+  command inside the temp repo. Claude Code also uses a small helper model (`claude-haiku-5-5`).
+- Cost is Claude Code's reported API-equivalent figure; the runs used a subscription login.
+
+**What it shows**
+1. Pit Crew makes the *same* local model far more productive on routine work: 61% → 92% passed,
+   ~3× less time, because helper requests no longer stall the agent and memory is managed.
+2. On routine tasks, local + Pit Crew comes close to Claude Code's reliability (92% vs 100%) for free
+   and offline, but is ~3–4× slower per task.
+3. On hard multi-step tasks the 9B model fails ~7 of 8 times **with or without Pit Crew** (no
+   measurable difference); Claude Code solves 90–100%. Orchestration does not make a small model
+   smarter.

@@ -122,6 +122,30 @@ export class OllamaClient {
     });
   }
 
+  /** Download a model. `onProgress` gets Ollama's status lines and the fraction done when known. */
+  async pull(model: string, onProgress?: (status: string, fraction?: number) => void): Promise<void> {
+    const res = await fetch(this.url + "/api/pull", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ model, stream: true }),
+      signal: AbortSignal.timeout(6 * 60 * 60_000),
+    });
+    if (!res.ok || !res.body) throw new BackendError(`/api/pull: ${res.status} ${(await res.text()).slice(0, 300)}`, res.status);
+    let buf = "";
+    for await (const chunk of res.body as unknown as AsyncIterable<Uint8Array>) {
+      buf += Buffer.from(chunk).toString("utf8");
+      let i;
+      while ((i = buf.indexOf("\n")) >= 0) {
+        const line = buf.slice(0, i).trim();
+        buf = buf.slice(i + 1);
+        if (!line) continue;
+        const ev = JSON.parse(line) as { status?: string; error?: string; total?: number; completed?: number };
+        if (ev.error) throw new BackendError(`pull ${model}: ${ev.error}`, 500);
+        onProgress?.(ev.status ?? "", ev.total ? (ev.completed ?? 0) / ev.total : undefined);
+      }
+    }
+  }
+
   async remove(model: string): Promise<void> {
     await this.json("/api/delete", { method: "DELETE", body: JSON.stringify({ model }) });
   }

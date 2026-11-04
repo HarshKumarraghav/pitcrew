@@ -11,12 +11,12 @@
 ![Pit Crew dashboard: a coder model loads, a title request goes to the light model, a burst queues, an idle model is evicted for background work](docs/img/demo.gif)
 
 ```sh
-npx pitcrew-ai serve
+npx pitcrew-ai init     # checks your Mac, picks models that fit its memory, sets everything up
 ```
 
 **[Live demo →](https://harshkumarraghav.github.io/pitcrew/)** the real dashboard replaying a recorded session
 (mock backend on a simulated 24 GB Mac; [how it is recorded](scripts/demo/record.mjs)).
-`serve` needs a config with your models; see [Quick start](#quick-start).
+Or let your coding agent do it: [one prompt](#let-your-agent-set-it-up).
 
 **OpenCode drives. Your local models are the crew. No swap, no cloud, no crashes.**
 
@@ -67,35 +67,54 @@ Pit Crew fills that gap.
 
 ## Quick start
 
-Needs macOS on Apple Silicon (Linux works but is less tested), Node ≥ 22.6 and
-[Ollama](https://ollama.com/download) running.
+Needs Node ≥ 22.6 and [Ollama](https://ollama.com/download). macOS on Apple Silicon is the main
+target; Linux works but is less tested.
 
 ```sh
-ollama pull qwen3.5:9b && ollama pull qwen3.5:0.8b
-
-# a config with a coder and a light model (edit the aliases if you like)
-curl -fsSLO https://raw.githubusercontent.com/HarshKumarraghav/pitcrew/main/examples/pitcrew.config.json
-
-npx pitcrew-ai audit     # what does this machine have, what fits now?
-npx pitcrew-ai serve     # gateway + dashboard on http://127.0.0.1:11500 (reads ./pitcrew.config.json)
+npx pitcrew-ai init      # look at the machine, recommend a coder + light model, ask, then set up
+npx pitcrew-ai serve     # gateway + dashboard on http://127.0.0.1:11500
+OPENCODE_CONFIG=~/.pitcrew/opencode.json opencode
+npx pitcrew-ai doctor    # if anything is off: checks each link and prints the fix
 ```
 
-Point OpenCode at the gateway with the Pit Crew profile. It is merged on top of your global
-OpenCode config, which is not modified:
+`init` reads total and free memory, what Ollama has pulled and whether OpenCode is installed, then
+shows a plan like this before changing anything:
 
-```sh
-curl -fsSLO https://raw.githubusercontent.com/HarshKumarraghav/pitcrew/main/examples/opencode/opencode.pitcrew.json
-OPENCODE_CONFIG=opencode.pitcrew.json opencode
+```
+recommended for a 16 GB machine
+  coder   qwen3.5:4b     4.5 GB estimate        not pulled → download
+  light   qwen3.5:0.8b   1.2 GB on disk         already pulled ✓
+  context 16k for the coder · model budget 11.4 GB · coder + light ≈ 6.1 GB (estimate)
+
+will do
+  1. ollama pull qwen3.5:4b
+  2. write ~/.pitcrew/config.json
+  3. write ~/.pitcrew/opencode.json   (your own OpenCode config is untouched)
 ```
 
-From source:
+Picks come from measured data in [docs/MODELS.md](docs/MODELS.md), not from a model. Override with
+`--coder <tag>` / `--light <tag>`; `--json` prints the plan for scripts; `--yes` skips the question.
+
+### Let your agent set it up
+
+Paste this into Claude Code, OpenCode, Codex or any agent that can run commands:
+
+```text
+Set up Pit Crew (local LLM gateway for OpenCode + Ollama) on this machine by following
+https://raw.githubusercontent.com/HarshKumarraghav/pitcrew/main/docs/AGENT_SETUP.md
+Explain the plan to me and wait for my OK before downloading models or writing files.
+```
+
+It runs `init --json`, explains the recommendation, applies it after you agree, starts the gateway
+and runs `doctor`. Steps: [docs/AGENT_SETUP.md](docs/AGENT_SETUP.md).
+
+### From source
 
 ```sh
 git clone https://github.com/HarshKumarraghav/pitcrew.git && cd pitcrew
 npm install              # dev tools only (typescript); runtime has no dependencies
-cp examples/pitcrew.config.json pitcrew.config.json
+npm run dev -- init
 npm run dev -- serve
-OPENCODE_CONFIG=examples/opencode/opencode.pitcrew.json opencode
 ```
 
 `bin/opencode-local` launches OpenCode with the local-only profile and turns off OpenCode's update
@@ -106,6 +125,8 @@ profile it uses.
 
 | command | |
 |---|---|
+| `pitcrew init` | recommend models for this machine, pull them, write config + OpenCode profile |
+| `pitcrew doctor` | check Ollama, models, memory, gateway and OpenCode; print fixes |
 | `pitcrew serve` | gateway, router, scheduler, dashboard |
 | `pitcrew audit` | machine, memory, swap, pressure, runtimes, local and cloud models |
 | `pitcrew garage` | each local model's estimated / calibrated / measured memory and whether it fits now |

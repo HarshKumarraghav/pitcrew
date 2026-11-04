@@ -10,7 +10,7 @@ export interface MockModel {
 }
 
 /** A fake Ollama that tracks loaded models and streams OpenAI-style responses. */
-export async function startMockOllama(models: MockModel[], opts: { tokenDelayMs?: number; parallel?: number; loadDelayMs?: number; textToolCall?: string } = {}) {
+export async function startMockOllama(models: MockModel[], opts: { tokenDelayMs?: number; parallel?: number; loadDelayMs?: number; pullSizes?: Record<string, number>; textToolCall?: string } = {}) {
   // Requests the mock serves at once per model (OLLAMA_NUM_PARALLEL); the rest wait in line.
   let active = 0;
   const waiting: (() => void)[] = [];
@@ -52,6 +52,15 @@ export async function startMockOllama(models: MockModel[], opts: { tokenDelayMs?
           ...[...created.keys()].map((n) => ({ name: n, model: n, size: 0, digest: `d-${n}` })),
         ],
       });
+    }
+    if (url === "/api/pull") {
+      const size = opts.pullSizes?.[body.model];
+      if (size === undefined) return json(404, { error: `pull model manifest: file does not exist` });
+      if (!models.some((m) => m.name === body.model)) models.push({ name: body.model, size });
+      res.writeHead(200, { "content-type": "application/x-ndjson" });
+      res.write(JSON.stringify({ status: "pulling manifest" }) + "\n");
+      res.write(JSON.stringify({ status: "downloading", total: size, completed: size / 2 }) + "\n");
+      return res.end(JSON.stringify({ status: "success" }) + "\n");
     }
     if (url === "/api/show") {
       return json(200, {

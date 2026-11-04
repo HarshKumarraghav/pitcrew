@@ -9,6 +9,11 @@ import { Registry, DERIVED_NS } from "./models/registry.ts";
 import { scout, retrieve, formatContext, scanProject } from "./intel/index.ts";
 import { collectExample, exportDataset, planTune, learnDir, loadExamples } from "./learn/examples.ts";
 import { join } from "node:path";
+import { homedir } from "node:os";
+import { createInterface } from "node:readline/promises";
+import { DEFAULTS } from "./config.ts";
+import { detect, plan, renderPlan, apply } from "./setup/init.ts";
+import { doctor, renderChecks } from "./setup/doctor.ts";
 import { solveCli, SOLVE_HELP } from "./solve/cli.ts";
 
 const G = 1024 ** 3;
@@ -18,6 +23,10 @@ const HELP = `pitcrew — OpenCode drives. Your local models are the crew.
 
 usage: pitcrew <command> [options]
 
+  init [--yes] [--json] [--dry-run] [--force] [--coder tag] [--light tag]
+                                  check this machine, pick models that fit, pull them, write
+                                  ~/.pitcrew/config.json and an OpenCode profile (asks first)
+  doctor [--json] [--no-request]  check Ollama, models, memory, gateway and OpenCode; prints fixes
   serve [--config f] [--port n]   start the gateway + dashboard (default http://127.0.0.1:11500)
   audit                           inspect this machine: memory, swap, pressure, runtimes, models
   garage                          local models with estimated vs measured memory, and what fits now
@@ -38,6 +47,11 @@ common: --config <file>   (default ./pitcrew.config.json or ~/.pitcrew/config.js
 function flag(args: string[], name: string, short?: string): string | undefined {
   const i = args.findIndex((a) => a === `--${name}` || (short && a === `-${short}`));
   return i >= 0 ? args[i + 1] : undefined;
+}
+
+function toolVersion(cmd: string): string | undefined {
+  const v = tryRun(cmd, ["--version"]);
+  return v === "not found" ? undefined : v;
 }
 
 function tryRun(cmd: string, args: string[]): string {
@@ -90,6 +104,49 @@ async function main() {
       };
       process.on("SIGINT", stop);
       process.on("SIGTERM", stop);
+      return;
+    }
+
+    case "init": {
+      const json = args.includes("--json");
+      const yes = args.includes("--yes") || args.includes("-y");
+      const dir = flag(args, "dir") ?? join(homedir(), ".pitcrew");
+      const port = flag(args, "port");
+      const client = new OllamaClient(flag(args, "backend") ?? process.env.PITCREW_BACKEND ?? DEFAULTS.backend.url);
+      const detected = await detect({ probe: defaultProbe(), client, toolVersion });
+      const p = plan(detected, { dir, port: port ? Number(port) : undefined, coder: flag(args, "coder"), light: flag(args, "light"), force: args.includes("--force"), cwd: process.cwd() });
+      if (json && !yes) return console.log(JSON.stringify(p, null, 2));
+      if (!json) console.log(renderPlan(p));
+      if (args.includes("--dry-run")) return;
+      if (!yes) {
+        if (!process.stdin.isTTY) return console.log("\nnothing changed; re-run with --yes to apply");
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        const answer = (await rl.question("\nProceed? [Y/n] ")).trim().toLowerCase();
+        rl.close();
+        if (answer && answer !== "y" && answer !== "yes") return console.log("nothing changed");
+      }
+      const log = (l: string) => (json ? console.error(l) : console.log(l));
+      const result = await apply(p, client, log);
+      if (json) return console.log(JSON.stringify({ ...result, next: p.next }, null, 2));
+      for (const w of result.written) console.log(`✓ wrote ${w}`);
+      for (const s of result.skipped) console.log(`· skipped ${s}`);
+      console.log(`\n${result.skipped.some((s) => s.startsWith("ollama pull")) ? "almost done; fix the ✗ above, re-run init, then" : "✓ done. Next:"}\n  ${p.next.join("\n  ")}`);
+      return;
+    }
+
+    case "doctor": {
+      const { config, path } = loadConfig(cfgPath);
+      const checks = await doctor({
+        config,
+        configPath: path,
+        client: new OllamaClient(config.backend.url),
+        probe: defaultProbe(),
+        profilePath: join(homedir(), ".pitcrew", "opencode.json"),
+        toolVersion,
+        request: !args.includes("--no-request"),
+      });
+      console.log(args.includes("--json") ? JSON.stringify(checks, null, 2) : renderChecks(checks));
+      if (checks.some((c) => c.status === "fail")) process.exitCode = 1;
       return;
     }
 
