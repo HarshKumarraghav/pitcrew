@@ -9,6 +9,7 @@ import { Registry, DERIVED_NS } from "./models/registry.ts";
 import { scout, retrieve, formatContext, scanProject } from "./intel/index.ts";
 import { collectExample, exportDataset, planTune, learnDir, loadExamples } from "./learn/examples.ts";
 import { join } from "node:path";
+import { solveCli, SOLVE_HELP } from "./solve/cli.ts";
 
 const G = 1024 ** 3;
 const gb = (b?: number) => (b === undefined ? "?" : `${(b / 1e9).toFixed(1)} GB`);
@@ -22,6 +23,7 @@ usage: pitcrew <command> [options]
   garage                          local models with estimated vs measured memory, and what fits now
   scout <repo>                    analyse a repository → ~/.pitcrew/projects/<id>/ (repo untouched)
   context "<task>" [--repo dir] [-k n]   files most relevant to a task (BM25 + symbols + import graph)
+${SOLVE_HELP}
   status                          live scheduler state from a running gateway
   learn collect --task "<what was done>" [--repo dir] [--base ref] [--approve]
                                   save a reviewed, test-passing change as a training example (opt-in)
@@ -204,6 +206,10 @@ async function main() {
       console.log("\nThen evaluate base vs adapter, each with and without retrieval (docs/BENCHMARKS.md); keep the base model unchanged.");
       return;
     }
+
+    case "solve":
+      process.exitCode = await solveCli(args);
+      return;
 
     case "status": {
       const { config } = loadConfig(cfgPath);

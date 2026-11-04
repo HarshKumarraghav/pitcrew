@@ -15,7 +15,9 @@ PITCREW_LOG=normal node --experimental-strip-types --no-warnings src/cli.ts serv
 GW=$!
 for i in $(seq 1 30); do curl -sf http://127.0.0.1:11500/healthz >/dev/null && break; sleep 1; done
 bench/tools/netwatch.sh "/tmp/nw-$RUN.txt" 21600 & NW=$!
-PITCREW_OPENCODE_PROFILE="$ROOT/examples/opencode/opencode.pitcrew.json" node bench/agent/run.mjs --model pitcrew/auto --label "$LABEL" --repeat "$REPEAT" --tests "$TASKS" --timeout 900
+# A config may ask for best-of-N (`pitcrew solve`) via a top-level "benchAttempts" (the gateway ignores it).
+ATTEMPTS=$(python3 -c 'import json,sys;print(json.load(open(sys.argv[1])).get("benchAttempts",1))' "$CONFIG")
+PITCREW_OPENCODE_PROFILE="$ROOT/examples/opencode/opencode.pitcrew.json" node bench/agent/run.mjs --model pitcrew/auto --label "$LABEL" --repeat "$REPEAT" --tests "$TASKS" --timeout 900 --attempts "$ATTEMPTS"
 mkdir -p "bench/agent/results/$RUN"
 curl -s http://127.0.0.1:11500/governor/state > "bench/agent/results/$RUN/gateway-state-$TAG.json"
 cp "$CONFIG" "bench/agent/results/$RUN/gateway-config.json"

@@ -114,6 +114,39 @@ New `src/solve/` (outer loop, uses existing `src/intel` and bench `lib.mjs` idea
 - CLI `pitcrew solve "<task>" [--repo] [--attempts 3] [--budget 15m]` in `src/cli.ts`.
 - Ablations via `bench/configs/make.mjs` (+ `repair-toolcalls`, `stuck`, `best-of-3`) through `interleave.sh`.
 
+**Phase 1 status (11-04):** code done and tested; the ablations need the Mac on power.
+- **Stuck signals** → `StepInfo.stuck`, computed from the request's own messages (the gateway stays
+  stateless). Flag `router.stuckHints` (off by default) adds a change-of-strategy hint. The three
+  signals, each needing 3 in a row:
+  - the same test failing across test runs
+  - edits that change nothing (failed, repeated, or undoing an earlier edit)
+  - tool errors
+  - Thinking is never cut while stuck.
+- **Replay check (not an ablation):** run over the 75 saved valid local OpenCode sessions, the
+  detector fires in 14/32 failed runs vs 4/43 passed runs. It fires in 10 of 22 hard-task failures,
+  mostly "same failing test", usually with many steps left.
+- **`testRepair`** now quotes the failing tests with location and expected/actual, taken from the
+  tool output (node:test, Jest, Vitest, pytest).
+- **`pitcrew solve`** (`src/solve/`): best-of-N in throwaway git worktrees, with the time budget
+  split across attempts. The user's checkout changes only with `--apply`.
+  - **Judge:** the repo's own tests, never hidden ones.
+  - **Finding that shaped it:** at the start, the repo's own suite already passes on 8 of the 10
+    hard tasks (only I and J fail). "Tests pass" alone therefore cannot pick an attempt.
+  - **What counts as evidence:** either the suite failed before and passes now, or the attempt's
+    *new* tests fail on the original code and pass with the change (fail-to-pass). Weak passes don't
+    stop the search.
+  - **Never accepted:** an attempt that deletes, skips or edits existing tests.
+  - **Test-first option:** `--test-first` asks the agent to write the failing test first.
+- **Bench:** `run.mjs --attempts N` runs solve inside the same 900 s budget, applies the best attempt
+  and verifies it as usual. The configs are `best-of-3` (= today, `benchAttempts: 3`) and `stuck`
+  (= levers-all + `stuckHints`).
+  - Smoke test, task D, 2 attempts (functional only, on battery): solved on attempt 1 in 58 s
+    ("fixed-failing"), applied, and hidden checks pass.
+- **Next (on power):**
+  - `interleave.sh "G H I J K L M N O P" "today best-of-3" 1 3`
+  - `interleave.sh "G H I J K L M N O P" "levers-all stuck" 1 3`
+  - Report solved/hour next to pass rate.
+
 ### Phase 1 builds on what exists
 
 Already built (`src/server/levers.ts`, flags under `router.*`, all **off by default**, configs in

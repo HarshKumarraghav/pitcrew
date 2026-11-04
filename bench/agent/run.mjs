@@ -39,6 +39,10 @@ function claudeAllowed(dir) {
 const LABEL = (args.label ?? MODEL.replace(/\W+/g, "_")) + (args.repeat ? `-r${args.repeat}` : "");
 const TESTS = args.tests === "all" ? [...REGRESSION, ...HARD] : args.tests === "hard" ? HARD : (args.tests ?? REGRESSION.join(",")).split(",");
 const TIMEOUT_S = Number(args.timeout ?? 900);
+// --attempts N (N > 1): `pitcrew solve` (best-of-N, judged by the repo's own tests) inside the same
+// wall-clock budget instead of one OpenCode session; the best attempt is applied, then verified as usual.
+const ATTEMPTS = Number(args.attempts ?? 1);
+if (ATTEMPTS > 1 && AGENT !== "opencode") throw new Error("--attempts needs --agent opencode");
 for (const k of TESTS) if (!TASKS[k]) throw new Error(`unknown task ${k}`);
 
 /** Map Claude Code stream-json events onto the harness metrics. */
@@ -117,10 +121,20 @@ async function runTask(key) {
           ],
           { cwd: dir, env: process.env, stdio: ["pipe", "pipe", "pipe"] },
         )
-      : spawn("opencode", ["run", "--pure", "--format", "json", "-m", MODEL, "--dir", dir, task.prompt], {
-          env,
-          stdio: ["ignore", "pipe", "pipe"],
-        });
+      : ATTEMPTS > 1
+        ? spawn(
+            process.execPath,
+            [
+              "--experimental-strip-types", "--no-warnings", join(HERE, "..", "..", "src", "cli.ts"), "solve", task.prompt,
+              "--repo", dir, "--attempts", String(ATTEMPTS), "--budget", `${TIMEOUT_S}s`, "--apply-best", "--format", "json",
+              "--model", MODEL, "--opencode-config", env.OPENCODE_CONFIG, "--out", join(HERE, "results", LABEL, `${key}.solve`),
+            ],
+            { env, stdio: ["ignore", "pipe", "pipe"] },
+          )
+        : spawn("opencode", ["run", "--pure", "--format", "json", "-m", MODEL, "--dir", dir, task.prompt], {
+            env,
+            stdio: ["ignore", "pipe", "pipe"],
+          });
   if (AGENT === "claude") child.stdin.end(task.prompt); // prompt via stdin (tool flags are variadic)
   let stderr = "";
   child.stderr.on("data", (d) => (stderr += d));
@@ -145,7 +159,7 @@ async function runTask(key) {
   const killer = setTimeout(() => {
     timedOut = true;
     child.kill("SIGTERM");
-  }, TIMEOUT_S * 1000);
+  }, (TIMEOUT_S + (ATTEMPTS > 1 ? 300 : 0)) * 1000); // solve: + time to judge and apply the last attempt
   const exitCode = await new Promise((r) => child.on("close", r));
   const t1 = Date.now(); // agent process wall clock ends here; verification is excluded
   clearTimeout(killer);
@@ -155,7 +169,13 @@ async function runTask(key) {
 
   // Extract agent text + tool stats from the event stream.
   const cc = AGENT === "claude" ? claudeStats(events) : null;
+  const solveReport = events.find((e) => e.type === "pitcrew_solve")?.report;
+  // With solve, the final text is the applied (best) attempt's, not every attempt's.
+  const marks = events.map((e, i) => (e.type === "pitcrew_attempt" ? [e.n, i] : null)).filter(Boolean);
+  const from = marks.find(([n]) => n === solveReport?.best)?.[1] ?? 0;
+  const to = marks.find(([n]) => n === (solveReport?.best ?? 0) + 1)?.[1] ?? events.length;
   const text = cc ? cc.text : events
+    .slice(from, to)
     .filter((e) => e.type === "text")
     .map((e) => e.part?.text ?? "")
     .join("\n");
@@ -201,6 +221,14 @@ async function runTask(key) {
     toolErrors: toolErrors.length,
     toolErrorSamples: cc ? toolErrors.slice(0, 3) : toolErrors.slice(0, 3).map((e) => `${e.part?.tool}: ${String(e.part?.state?.error).slice(0, 160)}`),
     agent: AGENT,
+    attempts: ATTEMPTS > 1 ? ATTEMPTS : undefined,
+    solve: solveReport && {
+      status: solveReport.status,
+      best: solveReport.best,
+      applied: solveReport.applied,
+      baselineOk: solveReport.baseline.ok,
+      attempts: solveReport.attempts.map((a) => ({ n: a.n, s: Math.round(a.agent.ms / 1000), timedOut: a.agent.timedOut, testsOk: a.verdict?.tests.ok, evidence: a.verdict?.evidence, acceptable: a.verdict?.acceptable, error: a.error })),
+    },
     costUsd: cc?.costUsd,
     modelsUsed: cc?.models,
     permissionDenials: cc?.denials,

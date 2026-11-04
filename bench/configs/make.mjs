@@ -21,6 +21,9 @@ const out = {
   today: clone(),
   cap: (() => { const c = clone(); cap(c); return c; })(),
   "repair-toolcalls": (() => { const c = clone(); LEVERS.toolcalls(c); return c; })(),
+  // Phase 1 ablations (kept out of levers-all until the 0.3 runs are done):
+  // best-of-3 = today, run as `pitcrew solve --attempts 3` (benchAttempts is read by run-pitcrew.sh).
+  "best-of-3": (() => { const c = clone(); c.benchAttempts = 3; return c; })(),
   "levers-all": (() => { const c = clone(); cap(c); for (const f of Object.values(LEVERS)) f(c); return c; })(),
 };
 for (const drop of Object.keys(LEVERS)) {
@@ -29,5 +32,6 @@ for (const drop of Object.keys(LEVERS)) {
   for (const [k, f] of Object.entries(LEVERS)) if (k !== drop) f(c);
   out[`levers-minus-${drop}`] = c;
 }
+out.stuck = (() => { const c = structuredClone(out["levers-all"]); c.router.stuckHints = true; return c; })();
 for (const [name, c] of Object.entries(out)) writeFileSync(join(HERE, `${name}.json`), JSON.stringify(c, null, 2) + "\n");
 console.log(Object.keys(out).join(" "));

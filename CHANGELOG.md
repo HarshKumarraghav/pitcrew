@@ -15,6 +15,16 @@ All notable changes to this project are documented here. The format follows
   tool names; values typed by the tool's schema; anything unparseable passes through unchanged.
   Counted in `pitcrew_toolcalls_repaired_total` and `repairedToolCalls` in the request log (no text).
 - Bench config `repair-toolcalls` (today + the flag) and lever `toolcalls` in `levers-all`.
+- `pitcrew solve "<task>" [--attempts 3] [--budget 15m] [--apply]`: best-of-N attempts with OpenCode
+  through the gateway, each in a throwaway git worktree, judged by the repository's own tests. An
+  attempt only counts with evidence: the failing suite now passes, or its new tests fail on the
+  original code and pass with the change. Attempts that delete, skip or edit existing tests are
+  never applied. Patches and `report.json` go to `~/.pitcrew/solve/`.
+- `router.stuckHints` (off by default): a change-of-strategy hint when the same test fails 3 runs in
+  a row, 3 edits change nothing, or 3 tool calls in a row fail.
+- `router.testRepair` now quotes the failing tests (name, location, expected vs actual) from the
+  test output (node:test, Jest, Vitest, pytest).
+- Bench: `run.mjs --attempts N` (solve inside the same time budget); configs `best-of-3` and `stuck`.
 
 ### Fixed
 

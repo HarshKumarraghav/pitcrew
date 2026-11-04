@@ -85,6 +85,11 @@ export interface RouterConfig {
   /** M8.3: ask for a short plan before the first tool call (in the stable system block). */
   planFirst: boolean;
   /**
+   * Phase 1: a change-of-strategy hint when the agent is stuck — the same test failing 3 runs in a
+   * row, 3 edits that change nothing, or 3 failed tool calls in a row.
+   */
+  stuckHints: boolean;
+  /**
    * Rewrite tool calls the model wrote as plain text (Qwen XML, Hermes/bare JSON) into proper
    * `tool_calls` on /v1/chat/completions requests that declared tools. Unparseable text passes unchanged.
    */
@@ -199,6 +204,7 @@ export const DEFAULTS: Config = {
     loopHints: false,
     testRepair: false,
     planFirst: false,
+    stuckHints: false,
     repairToolCalls: false,
   },
   telemetry: { enabled: true, coldPrefillTokPerS: 584 },
