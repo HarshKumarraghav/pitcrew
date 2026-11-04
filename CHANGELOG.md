@@ -26,6 +26,12 @@ All notable changes to this project are documented here. The format follows
   test output (node:test, Jest, Vitest, pytest).
 - Bench: `run.mjs --attempts N` (solve inside the same time budget); configs `best-of-3` and `stuck`.
 
+### Changed
+
+- README leads with the measured results: headline table, three charts (light and dark,
+  `node scripts/charts/build.mjs`), what each of the 16 tasks tests, how runs are graded and
+  validated, honest limits, and the roadmap targets.
+
 ### Fixed
 
 - `bench/e2e.sh` OpenCode check: OpenCode gets `</dev/null` as stdin (`opencode run` waits for
