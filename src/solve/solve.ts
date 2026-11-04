@@ -31,6 +31,8 @@ export interface SolveOptions {
   log?: (line: string) => void;
   /** Raw agent events, for harnesses that read them. */
   onEvent?: (line: string) => void;
+  /** Clock for the budget (tests). */
+  now?: () => number;
 }
 
 export interface AttemptReport {
@@ -64,7 +66,8 @@ export interface SolveReport {
 const TEST_FIRST = "\n\nWork test-first: add a new test that reproduces the problem or specifies the new behaviour and check that it fails, then change the code until the whole test suite passes. Do not edit, skip or delete existing tests.";
 
 export async function solve(o: SolveOptions): Promise<SolveReport> {
-  const t0 = Date.now();
+  const now = o.now ?? Date.now;
+  const t0 = now();
   const log = o.log ?? (() => {});
   const attempts = Math.max(1, o.attempts ?? 3);
   const budgetMs = o.budgetMs ?? 15 * 60_000;
@@ -98,7 +101,7 @@ export async function solve(o: SolveOptions): Promise<SolveReport> {
     const ctx = { baseRev: base.rev, command: testCommand, timeoutMs: testTimeoutMs, baselineFailed: !b.ok, baseTree };
 
     for (let n = 1; n <= attempts; n++) {
-      const remaining = budgetMs - (Date.now() - t0);
+      const remaining = budgetMs - (now() - t0);
       if (remaining < minAttemptMs) {
         log(`budget spent: ${Math.round(remaining / 1000)} s left, stopping before attempt ${n}`);
         break;
@@ -144,7 +147,7 @@ export async function solve(o: SolveOptions): Promise<SolveReport> {
     }
   } finally {
     baseTree.remove();
-    report.ms = Date.now() - t0;
+    report.ms = now() - t0;
     writeFileSync(join(o.outDir, "report.json"), JSON.stringify(report, null, 2));
   }
   return report;

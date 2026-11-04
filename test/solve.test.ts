@@ -110,9 +110,11 @@ test("solve: weak passes are reported as such; test-first adds an instruction", 
 
 test("solve: the budget is split across attempts and stops early when spent", async () => {
   const dir = repo(true);
-  const slow: Agent = { name: "slow", run: async () => (await new Promise((r) => setTimeout(r, 1600)), { exitCode: 0, timedOut: false, ms: 1600, steps: 1, toolCalls: 0, toolErrors: 0, text: "" }) };
+  // A fake clock that only the agent advances, so test-run time on a busy machine cannot matter.
+  let clock = 0;
+  const slow: Agent = { name: "slow", run: async () => ((clock += 1600), { exitCode: 0, timedOut: false, ms: 1600, steps: 1, toolCalls: 0, toolErrors: 0, text: "" }) };
   // Attempt 1 gets max(minAttempt, remaining / 3); after it, less than minAttempt is left.
-  const r = await solve(opts(dir, slow, { attempts: 3, budgetMs: 4000, minAttemptMs: 2500 }));
+  const r = await solve(opts(dir, slow, { attempts: 3, budgetMs: 4000, minAttemptMs: 2500, now: () => clock }));
   assert.equal(r.attempts.length, 1);
   assert.equal(r.attempts[0]!.timeoutMs, 2500);
   assert.equal(r.status, "unsolved");
