@@ -477,3 +477,66 @@ test("thrash relief also sheds pinned (warm) helpers; they reload on the next re
   (await m.sched.acquire(m.req("small", 1 * G, { pin: true }))).release();
   assert.deepEqual(m.log, ["load:small", "unload:small", "load:small"]);
 });
+
+// ─────────────── exclusive mode (one big model for a hard task) ───────────────
+
+test("exclusive: evicts every idle model (pinned too), holds other models until the big one is idle", async () => {
+  const m = machine({ total: 32 * G, gpu: 28 * G, available: 20 * G, queueTimeoutMs: 600_000 });
+  (await m.sched.acquire(m.req("helper", 1 * G, { pin: true }))).release();
+  (await m.sched.acquire(m.req("coder", 7 * G))).release();
+  const big = await m.sched.acquire(m.req("big", 11 * G, { exclusive: true }));
+  assert.deepEqual(m.log.slice(0, 2), ["load:helper", "load:coder"]);
+  assert.ok(m.log.indexOf("load:big") > m.log.indexOf("unload:helper") && m.log.indexOf("load:big") > m.log.indexOf("unload:coder"), m.log.join(","));
+  big.release();
+  assert.equal(m.sched.snapshot().exclusive?.key, "big");
+
+  // A helper request in a gap between two agent steps waits; the big model's next step goes first.
+  let helperServed = false;
+  const helper = m.sched.acquire(m.req("helper", 1 * G, { pin: true })).then((l) => ((helperServed = true), l));
+  await flush();
+  assert.equal(helperServed, false);
+  assert.match(m.sched.snapshot().queue[0]?.reason ?? "", /exclusive mode \(big\)/);
+  m.advance(30_000);
+  (await m.sched.acquire(m.req("big", 11 * G, { exclusive: true }))).release();
+  m.advance(30_000);
+  await flush();
+  assert.equal(helperServed, false, "30 s after the last big request: still exclusive");
+  m.advance(31_000);
+  (await helper).release();
+  assert.equal(helperServed, true);
+  assert.equal(m.sched.snapshot().exclusive, undefined);
+  assert.ok(m.sched.events.some((e) => e.type === "exclusive" && /ended/.test(e.msg)));
+});
+
+test("exclusive: a model mid-request finishes first; it is never evicted while busy", async () => {
+  const m = machine({ total: 32 * G, gpu: 28 * G, available: 14 * G, queueTimeoutMs: 600_000 });
+  const busy = await m.sched.acquire(m.req("coder", 7 * G));
+  let bigServed = false;
+  const big = m.sched.acquire(m.req("big", 11 * G, { exclusive: true })).then((l) => ((bigServed = true), l));
+  // New work for the coder is held even though the coder is loaded.
+  let coderAgain = false;
+  const again = m.sched.acquire(m.req("coder", 7 * G)).then((l) => ((coderAgain = true), l));
+  await flush();
+  assert.equal(bigServed, false, "6 GB free: the big model waits for the busy coder");
+  assert.equal(coderAgain, false);
+  assert.ok(!m.log.includes("unload:coder"));
+  busy.release();
+  (await big).release();
+  assert.deepEqual(m.log, ["load:coder", "unload:coder", "load:big"]);
+  m.advance(61_000);
+  (await again).release();
+  assert.equal(coderAgain, true);
+});
+
+test("exclusive: a second exclusive model waits for the first to end, then takes over", async () => {
+  const m = machine({ total: 32 * G, gpu: 28 * G, available: 20 * G, queueTimeoutMs: 600_000 });
+  (await m.sched.acquire(m.req("big-a", 11 * G, { exclusive: true }))).release();
+  let bServed = false;
+  const b = m.sched.acquire(m.req("big-b", 11 * G, { exclusive: true })).then((l) => ((bServed = true), l));
+  await flush();
+  assert.equal(bServed, false);
+  m.advance(61_000);
+  (await b).release();
+  assert.equal(m.sched.snapshot().exclusive?.key, "big-b");
+  assert.deepEqual(m.log, ["load:big-a", "unload:big-a", "load:big-b"]);
+});

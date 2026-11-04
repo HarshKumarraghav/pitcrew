@@ -51,6 +51,12 @@ export interface ModelAlias {
    * reloaded at the same context once idle for 5 s, which costs one re-prefill on the next request.
    */
   maxResidentGiB?: number;
+  /**
+   * Exclusive mode for a big model used on hard tasks: while it is in use, every other idle model
+   * is unloaded (pinned helpers too) and requests for other models wait until it has been idle for
+   * `scheduler.exclusiveIdleMs`.
+   */
+  exclusive?: boolean;
   /** Optional sampling defaults baked into the derived model. */
 
   parameters?: Record<string, number | string>;
@@ -137,6 +143,8 @@ export interface Config {
     fastLane: boolean;
     /** A background request may evict a model only after it has been idle this long. */
     backgroundEvictIdleMs: number;
+    /** Exclusive mode (models.<alias>.exclusive) ends after its model has been idle this long. */
+    exclusiveIdleMs: number;
   };
   context: {
     buckets: number[];
@@ -184,6 +192,7 @@ export const DEFAULTS: Config = {
     strictPriority: true,
     fastLane: true,
     backgroundEvictIdleMs: 3000,
+    exclusiveIdleMs: 60_000,
   },
   context: {
     buckets: [8192, 16384, 32768, 65536, 131072],

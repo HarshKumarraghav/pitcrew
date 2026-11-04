@@ -128,6 +128,7 @@ async function runTask(key) {
               "--experimental-strip-types", "--no-warnings", join(HERE, "..", "..", "src", "cli.ts"), "solve", task.prompt,
               "--repo", dir, "--attempts", String(ATTEMPTS), "--budget", `${TIMEOUT_S}s`, "--apply-best", "--format", "json",
               "--model", MODEL, "--opencode-config", env.OPENCODE_CONFIG, "--out", join(HERE, "results", LABEL, `${key}.solve`),
+              ...(args.escalate ? ["--escalate", args.escalate] : []),
             ],
             { env, stdio: ["ignore", "pipe", "pipe"] },
           )
@@ -227,7 +228,7 @@ async function runTask(key) {
       best: solveReport.best,
       applied: solveReport.applied,
       baselineOk: solveReport.baseline.ok,
-      attempts: solveReport.attempts.map((a) => ({ n: a.n, s: Math.round(a.agent.ms / 1000), timedOut: a.agent.timedOut, testsOk: a.verdict?.tests.ok, evidence: a.verdict?.evidence, acceptable: a.verdict?.acceptable, error: a.error })),
+      attempts: solveReport.attempts.map((a) => ({ n: a.n, agent: a.agentName, s: Math.round(a.agent.ms / 1000), timedOut: a.agent.timedOut, testsOk: a.verdict?.tests.ok, evidence: a.verdict?.evidence, acceptable: a.verdict?.acceptable, error: a.error })),
     },
     costUsd: cc?.costUsd,
     modelsUsed: cc?.models,

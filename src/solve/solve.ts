@@ -33,10 +33,17 @@ export interface SolveOptions {
   onEvent?: (line: string) => void;
   /** Clock for the budget (tests). */
   now?: () => number;
+  /**
+   * One more attempt with a stronger agent (e.g. the big local model in exclusive mode) when the
+   * regular attempts found no strong evidence. It gets whatever budget is left.
+   */
+  escalate?: Agent;
 }
 
 export interface AttemptReport {
   n: number;
+  /** Which agent ran it (differs from the report's agent for the escalation attempt). */
+  agentName: string;
   timeoutMs: number;
   agent: Omit<AgentRun, "text">;
   verdict?: Omit<Verdict, "tests"> & { tests: Omit<Verdict["tests"], "failing"> & { failing: string[] } };
@@ -100,21 +107,23 @@ export async function solve(o: SolveOptions): Promise<SolveReport> {
     log(`baseline: \`${testCommand}\` ${b.ok ? "passes" : `fails (${b.failing.length || b.fail || "?"} failing)`} at ${base.rev.slice(0, 8)}${base.dirty ? " (incl. uncommitted edits)" : ""}`);
     const ctx = { baseRev: base.rev, command: testCommand, timeoutMs: testTimeoutMs, baselineFailed: !b.ok, baseTree };
 
-    for (let n = 1; n <= attempts; n++) {
+    const plan = [...Array.from({ length: attempts }, () => o.agent), ...(o.escalate ? [o.escalate] : [])];
+    for (let n = 1; n <= plan.length; n++) {
+      const agent = plan[n - 1]!;
       const remaining = budgetMs - (now() - t0);
       if (remaining < minAttemptMs) {
         log(`budget spent: ${Math.round(remaining / 1000)} s left, stopping before attempt ${n}`);
         break;
       }
       // Split what is left evenly, so a slow first attempt cannot use up every later one.
-      const timeoutMs = Math.max(minAttemptMs, Math.floor(remaining / (attempts - n + 1)));
+      const timeoutMs = Math.max(minAttemptMs, Math.floor(remaining / (plan.length - n + 1)));
       const wt = createWorktree(base, `attempt-${n}`);
-      const a: AttemptReport = { n, timeoutMs, agent: { exitCode: null, timedOut: false, ms: 0, steps: 0, toolCalls: 0, toolErrors: 0 } };
+      const a: AttemptReport = { n, agentName: agent.name, timeoutMs, agent: { exitCode: null, timedOut: false, ms: 0, steps: 0, toolCalls: 0, toolErrors: 0 } };
       report.attempts.push(a);
       try {
-        log(`attempt ${n}/${attempts}: ${o.agent.name}, up to ${Math.round(timeoutMs / 1000)} s`);
-        o.onEvent?.(JSON.stringify({ type: "pitcrew_attempt", n }));
-        const { text: _text, ...run } = await o.agent.run({ dir: wt.dir, prompt: o.task + (o.testFirst ? TEST_FIRST : ""), timeoutMs, onEvent: o.onEvent });
+        log(`attempt ${n}/${plan.length}: ${agent.name}${agent === o.escalate ? " (escalation)" : ""}, up to ${Math.round(timeoutMs / 1000)} s`);
+        o.onEvent?.(JSON.stringify({ type: "pitcrew_attempt", n, agent: agent.name }));
+        const { text: _text, ...run } = await agent.run({ dir: wt.dir, prompt: o.task + (o.testFirst ? TEST_FIRST : ""), timeoutMs, onEvent: o.onEvent });
         a.agent = run;
         const v = await judgeAttempt(wt, ctx);
         const patch = wt.patch();

@@ -175,6 +175,30 @@ so T1 remains a real test.
   `tierFor` offers them only where they fit in exclusive mode; tool-call smoke test before use.
 - `solve` cascade: 9B attempts → 27B attempt in exclusive mode → (Phase 3) helper.
 
+**Phase 2 status (11-04):** code done and tested. The model download is in progress; the smoke test
+and the cascade ablation still need the Mac on power.
+- **Exclusive mode** (`AcquireRequest.exclusive`, alias flag `models.<alias>.exclusive`):
+  - When a request for the big model arrives, every other idle model is unloaded, pinned helpers
+    included. In-flight requests finish first; nothing is evicted mid-request.
+  - Requests for other models wait ("exclusive mode (big)") until the big model has been idle for
+    `scheduler.exclusiveIdleMs` (60 s). That keeps gaps between agent steps safe.
+  - A second exclusive model takes over when the first ends.
+  - The dashboard shows `EXCLUSIVE <alias>`. 3 scheduler tests.
+- **Big-model catalog:** `BIG_MODELS` + `bigModelFor()` give no big model below 24 GB, the 27B
+  `UD-IQ3_XXS` (10.9 GB) at 24 GB, and the 27B `UD-Q4_K_XL` (17.6 GB) from 32 GB. Sizes are vendor
+  file sizes (estimate); `init` never picks one automatically.
+  - Correct tag: `hf.co/unsloth/Qwen3.8-27B-GGUF:UD-IQ3_XXS` (the plan said `:IQ3_XXS`).
+- **Cascade:** `pitcrew solve --escalate pitcrew/big` adds one attempt with the big model when the
+  regular attempts found no strong evidence; it gets the budget that is left. Bench config `cascade` =
+  best-of-3 + escalation to a `big` alias (exclusive, primary, 32k).
+- **Smoke test:** `bench/tools/toolcall-smoke.mjs --model <m> --n 5` sends the real OpenCode request
+  and counts valid tool calls, text-written calls (repairable) and plain answers. Checked on
+  qwen3.5:0.8b: 2/2 valid.
+- **Next (on power, apps closed):**
+  - Smoke-test the 27B.
+  - Measure its resident size and pressure in exclusive mode (target: never "critical").
+  - Then `interleave.sh "G H I J K L M N O P" "best-of-3 cascade" 1 3`.
+
 ### Phase 3 — any agent, front-end and helper (≈ 4 days) → T3
 - **Front-ends**:
   - Claude Code: new `src/server/anthropic.ts` — `/v1/messages` (+ `count_tokens` estimate, `HEAD /api/hello`),

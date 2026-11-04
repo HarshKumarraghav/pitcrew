@@ -25,6 +25,22 @@ export const CATALOG: CatalogModel[] = [
   { name: "qwen3.5:9b", bytes: 7.6 * G, residentBytes: 7.6 * G, basis: "measured", note: "default coder; 5/6 routine tasks direct, 6/6 through Pit Crew (mode B)" },
 ];
 
+/**
+ * Big models for hard tasks only, run in exclusive mode (`models.<alias>.exclusive`), largest first.
+ * Never picked by `init`; sizes are the vendor file sizes (estimate). Low-bit 27B builds can lose
+ * tool-calling reliability: smoke-test before relying on one.
+ */
+export const BIG_MODELS: CatalogModel[] = [
+  { name: "hf.co/unsloth/Qwen3.8-27B-GGUF:UD-Q4_K_XL", bytes: 17.56 * G, basis: "estimate", note: "27B at ~4-bit; 32 GB+ machines" },
+  { name: "hf.co/unsloth/Qwen3.8-27B-GGUF:UD-IQ3_XXS", bytes: 10.93 * G, basis: "estimate", note: "27B at ~3-bit; fits a 24 GB Mac only with everything else unloaded" },
+];
+
+/** The largest big model whose 32k resident estimate fits the hard model budget on its own, if any. */
+export function bigModelFor(m: { totalBytes: number; gpuLimitBytes?: number }): CatalogModel | undefined {
+  const budget = m.gpuLimitBytes ? m.gpuLimitBytes * 0.9 : m.totalBytes * 0.75;
+  return BIG_MODELS.find((b) => residentEstimate({ name: b.name, bytes: b.bytes, basis: "estimate", pulled: false }, 32768) <= budget);
+}
+
 export const BIGGER_MODELS_NOTE =
   "32 GB+: docs/MODELS.md lists stronger coders (e.g. Qwen3.8-27B, ~18 GB, vendor size, not benchmarked here). Pull one and pass --coder <tag> to use it.";
 

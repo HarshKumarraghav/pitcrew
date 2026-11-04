@@ -21,6 +21,8 @@ const USAGE = `usage: pitcrew solve "<task>" [options]
   --apply               apply the best attempt to the checkout if its tests pass and no test was weakened
   --apply-best          apply the best attempt even if it did not pass (benchmarks)
   --model <id>          OpenCode model (default pitcrew/auto, through the running gateway)
+  --escalate <id>       one last attempt with a stronger model if nothing passed with evidence,
+                        e.g. pitcrew/big (a models.big alias with "exclusive": true)
   --opencode-config <f> OpenCode profile (default ~/.pitcrew/opencode.json, else the bundled example)
   --out <dir>           where patches and report.json go (default ~/.pitcrew/solve/<run>)
   --json                print the report as JSON at the end (progress on stderr)
@@ -39,7 +41,7 @@ export function parseDuration(s: string): number {
   return Math.round(n * { ms: 1, s: 1000, m: 60_000, h: 3_600_000 }[(m[2] ?? "s") as "ms" | "s" | "m" | "h"]);
 }
 
-const VALUED = new Set(["repo", "attempts", "budget", "test", "model", "opencode-config", "out", "format", "config"]);
+const VALUED = new Set(["repo", "attempts", "budget", "test", "model", "escalate", "opencode-config", "out", "format", "config"]);
 
 export async function solveCli(args: string[]): Promise<number> {
   const task = args.find((a, i) => !a.startsWith("--") && !(i > 0 && args[i - 1]!.startsWith("--") && VALUED.has(args[i - 1]!.slice(2))));
@@ -71,6 +73,7 @@ export async function solveCli(args: string[]): Promise<number> {
     repo,
     task,
     agent: opencodeAgent({ model, configPath }),
+    escalate: opt(args, "escalate") ? opencodeAgent({ model: opt(args, "escalate")!, configPath }) : undefined,
     attempts: Number(opt(args, "attempts") ?? 3),
     budgetMs: parseDuration(opt(args, "budget") ?? "15m"),
     testCommand: opt(args, "test"),

@@ -134,6 +134,7 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
       strictPriority: cfg.scheduler.strictPriority,
       fastLane: cfg.scheduler.fastLane,
       backgroundEvictIdleMs: cfg.scheduler.backgroundEvictIdleMs,
+      exclusiveIdleMs: cfg.scheduler.exclusiveIdleMs,
     },
     memView,
     () => monitor.sample(),
@@ -186,6 +187,7 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
       maxResidentBytes: r.spec.maxResidentGiB ? r.spec.maxResidentGiB * GiB : undefined,
       pin: r.spec.pin || r.spec.warm,
       policy: r.spec.primary ? "aggressive" : undefined,
+      exclusive: r.spec.exclusive,
       signal,
       label: r.alias ? `${r.alias}(${r.base})` : r.base,
       ops: {

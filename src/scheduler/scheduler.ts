@@ -78,6 +78,12 @@ export interface AcquireRequest {
    * fits the hard budget and memory is not thrashing, letting macOS compress idle apps.
    */
   policy?: MemoryPolicy;
+  /**
+   * Exclusive mode (one big model for a hard task): every other idle model is evicted, pinned
+   * helpers included, and requests for other models wait until this model has been idle for
+   * `exclusiveIdleMs`. Requests already running elsewhere finish normally.
+   */
+  exclusive?: boolean;
 }
 
 export interface Lease {
@@ -103,7 +109,8 @@ export interface SchedulerEvent {
     | "thrash"
     | "wait"
     | "recycle"
-    | "foreign";
+    | "foreign"
+    | "exclusive";
   key?: string;
   id?: number;
   msg: string;
@@ -147,6 +154,8 @@ export interface SchedulerOptions {
   fastLane: boolean;
   /** A unit above its maxResidentBytes is reloaded once it has been idle this long. */
   recycleIdleMs: number;
+  /** Exclusive mode ends once its model has had no request for this long (gaps between agent steps). */
+  exclusiveIdleMs: number;
 }
 
 export const SCHED_DEFAULTS: Omit<SchedulerOptions, "osReserveBytes" | "minFreeBytes"> = {
@@ -166,6 +175,7 @@ export const SCHED_DEFAULTS: Omit<SchedulerOptions, "osReserveBytes" | "minFreeB
   backgroundEvictIdleMs: 3000,
   fastLane: true,
   recycleIdleMs: 5000,
+  exclusiveIdleMs: 60_000,
 };
 
 interface Pending {
@@ -205,6 +215,8 @@ export class Scheduler {
   private timer?: NodeJS.Timeout;
   private dispatching = false;
   private redispatch = false;
+  /** The model holding exclusive mode, and when it last had a request. */
+  private exclusive?: { key: string; since: number; lastActive: number };
   readonly stats = { started: 0, finished: 0, failed: 0, rejected: 0, timedOut: 0, loads: 0, evictions: 0, recycles: 0, queueWaitMs: [] as number[] };
 
   constructor(
@@ -254,6 +266,7 @@ export class Scheduler {
         };
         req.signal.addEventListener("abort", p.onAbort, { once: true });
       }
+      if (this.exclusive?.key === req.key) this.exclusive.lastActive = this.now();
       this.queue.push(p);
       this.emit("enqueue", `#${p.id} ${req.priority} ${req.label ?? req.key} ctx=${req.ctx || "-"}`, req.key, p.id);
       this.dispatch();
@@ -358,6 +371,7 @@ export class Scheduler {
       running: this.running,
       maxConcurrent: this.effectiveMaxConcurrent(),
       degraded: this.degraded,
+      exclusive: this.exclusive ? { key: this.exclusive.key, sinceMs: this.now() - this.exclusive.since } : undefined,
       units: [...this.units.values()].map(({ ops: _ops, ...u }) => ({ ...u, idleMs: u.lastUsed ? Math.max(0, this.now() - u.lastUsed) : null })),
       queue: this.queue.map((p) => ({
         id: p.id,
@@ -485,10 +499,30 @@ export class Scheduler {
     const interactiveWaiting = this.queue.some((p) => this.effectivePriority(p) === "interactive");
     // Draining is re-derived every pass so an aborted grow request cannot block a unit forever.
     for (const u of this.units.values()) u.draining = false;
+    if (!this.exclusive) {
+      // The first waiting exclusive request (in priority order) takes the machine.
+      const claim = this.ordered().find((p) => p.req.exclusive);
+      if (claim) {
+        this.exclusive = { key: claim.req.key, since: this.now(), lastActive: this.now() };
+        this.emit("exclusive", `exclusive mode for ${claim.req.key}: other models are evicted when idle, their requests wait`, claim.req.key, claim.id);
+      }
+    }
+    const ex = this.exclusive;
+    if (ex) {
+      // Make room once: every other idle model goes, pinned helpers included.
+      const idle = [...this.units.values()].filter(
+        (u) => u.key !== ex.key && u.state === "ready" && u.inFlight === 0 && !this.busy.has(u.key) && (!u.foreign || (this.opts.evictForeign && u.ops)),
+      );
+      if (idle.length && !this.busy.has(ex.key)) void this.evictThenDispatch(ex.key, idle);
+    }
     // Each loop either starts an item, kicks a load, or skips; plans already made this pass
     // reserve their memory so two loads are never admitted against the same headroom.
     for (const p of this.ordered()) {
       const prio = this.effectivePriority(p);
+      if (ex && p.req.key !== ex.key) {
+        p.waitReason = `exclusive mode (${ex.key})`;
+        continue;
+      }
       const u = this.unitFor(p.req);
       const fast =
         this.opts.fastLane && u.kind === "llm" && u.state === "ready" && u.ctx >= p.req.ctx && !u.draining && !this.busy.has(u.key);
@@ -638,6 +672,7 @@ export class Scheduler {
       queuedMs,
     });
     let released = false;
+    if (this.exclusive?.key === u.key) this.exclusive.lastActive = this.now();
     p.resolve({
       id: p.id,
       key: u.key,
@@ -649,6 +684,7 @@ export class Scheduler {
         u.inFlight--;
         u.lastUsed = this.now();
         this.running--;
+        if (this.exclusive?.key === u.key) this.exclusive.lastActive = this.now();
         if (outcome?.ok === false) this.stats.failed++;
         else this.stats.finished++;
         if (u.kind === "job") {
@@ -818,6 +854,17 @@ export class Scheduler {
         this.stats.timedOut++;
         this.emit("timeout", `#${p.id} ${p.req.key} waited ${Math.round((now - p.enq) / 1000)}s: ${p.waitReason ?? ""}`, p.req.key, p.id);
         p.reject(new SchedulerError(`queue timeout: ${p.waitReason ?? "busy"}`, 503));
+      }
+    }
+
+    const ex = this.exclusive;
+    if (ex) {
+      const u = this.units.get(ex.key);
+      const active = (u?.inFlight ?? 0) > 0 || this.queue.some((p) => p.req.key === ex.key) || this.busy.has(ex.key);
+      const gone = !u || u.state === "unloaded" || u.state === "failed";
+      if (!active && (gone || now - ex.lastActive >= this.opts.exclusiveIdleMs)) {
+        this.exclusive = undefined;
+        this.emit("exclusive", `exclusive mode for ${ex.key} ended after ${Math.round((now - ex.since) / 1000)}s${gone ? " (model not loaded)" : " (idle)"}`, ex.key);
       }
     }
 

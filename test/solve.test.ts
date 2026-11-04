@@ -132,6 +132,20 @@ test("solve: uncommitted edits are the starting point; the checkout itself is no
   assert.equal(gitIn(dir, "stash", "list").trim(), "", "no stash entry created");
 });
 
+test("solve: escalation runs once after the regular attempts, only without strong evidence", async () => {
+  const dir = repo(true);
+  const big = scripted([FIX]);
+  big.name = "big";
+  const r = await solve(opts(dir, scripted([() => {}, () => {}]), { attempts: 2, escalate: big }));
+  assert.deepEqual(r.attempts.map((a) => a.agentName), ["scripted", "scripted", "big"]);
+  assert.equal(r.status, "solved");
+  assert.equal(r.best, 3);
+  const early = scripted([FIX]);
+  early.name = "never";
+  const r2 = await solve(opts(repo(true), scripted([FIX]), { attempts: 2, escalate: early }));
+  assert.deepEqual(r2.attempts.map((a) => a.agentName), ["scripted"], "solved on attempt 1: no escalation");
+});
+
 test("opencode adapter: headless flags, closed stdin, events parsed and passed on", async () => {
   const bin = join(realpathSync(mkdtempSync(join(tmpdir(), "pitcrew-fake-oc-"))), "opencode");
   // Waits for stdin like the real `opencode run` does: only returns because stdin is closed.

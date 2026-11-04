@@ -25,6 +25,13 @@ All notable changes to this project are documented here. The format follows
 - `router.testRepair` now quotes the failing tests (name, location, expected vs actual) from the
   test output (node:test, Jest, Vitest, pytest).
 - Bench: `run.mjs --attempts N` (solve inside the same time budget); configs `best-of-3` and `stuck`.
+- Exclusive mode for a big model on hard tasks (`models.<alias>.exclusive`): every other idle model
+  is unloaded and other requests wait until it has been idle for `scheduler.exclusiveIdleMs` (60 s);
+  shown on the dashboard.
+- `pitcrew solve --escalate <model>`: one last attempt with a stronger model (e.g. a 27B in exclusive
+  mode) when the regular attempts found no strong evidence. Bench config `cascade`.
+- Catalog `BIG_MODELS` / `bigModelFor()`: Qwen3.8-27B at ~3-bit for 24 GB, ~4-bit from 32 GB (never
+  picked by `init`). `bench/tools/toolcall-smoke.mjs` checks a model's tool calling before use.
 
 ### Changed
 

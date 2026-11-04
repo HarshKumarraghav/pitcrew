@@ -8,7 +8,7 @@ import { OllamaClient } from "../src/backend/ollama.ts";
 import { DEFAULTS, loadConfig, type Config } from "../src/config.ts";
 import { createGateway } from "../src/server/http.ts";
 import { MemoryMonitor, type MemoryProbe } from "../src/system/memory.ts";
-import { recommend, type MachineView } from "../src/setup/catalog.ts";
+import { recommend, type MachineView, bigModelFor } from "../src/setup/catalog.ts";
 import { apply, detect, plan } from "../src/setup/init.ts";
 import { doctor } from "../src/setup/doctor.ts";
 import { startMockOllama } from "./mock-ollama.ts";
@@ -166,4 +166,11 @@ test("doctor: healthy chain passes end to end; missing pieces fail with fixes", 
     await gw.close();
     await mock.close();
   }
+});
+
+test("big model for exclusive mode: none below 24 GB, 3-bit 27B at 24 GB, 4-bit from 32 GB", () => {
+  assert.equal(bigModelFor(mac(8)), undefined);
+  assert.equal(bigModelFor(mac(16)), undefined);
+  assert.match(bigModelFor(mac(24))?.name ?? "", /27B.*IQ3_XXS/);
+  assert.match(bigModelFor(mac(32))?.name ?? "", /27B.*Q4_K_XL/);
 });

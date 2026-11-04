@@ -24,6 +24,14 @@ const out = {
   // Phase 1 ablations (kept out of levers-all until the 0.3 runs are done):
   // best-of-3 = today, run as `pitcrew solve --attempts 3` (benchAttempts is read by run-pitcrew.sh).
   "best-of-3": (() => { const c = clone(); c.benchAttempts = 3; return c; })(),
+  // Phase 2: best-of-3 on the 9B, then one attempt with a 27B (~3-bit) in exclusive mode.
+  cascade: (() => {
+    const c = clone();
+    c.benchAttempts = 3;
+    c.benchEscalate = "pitcrew/big";
+    c.models.big = { model: "hf.co/unsloth/Qwen3.8-27B-GGUF:UD-IQ3_XXS", exclusive: true, primary: true, minCtx: 32768, maxCtx: 32768 };
+    return c;
+  })(),
   "levers-all": (() => { const c = clone(); cap(c); for (const f of Object.values(LEVERS)) f(c); return c; })(),
 };
 for (const drop of Object.keys(LEVERS)) {

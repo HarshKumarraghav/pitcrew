@@ -35,6 +35,12 @@
           "tool_call": true,
           "reasoning": true,
           "limit": { "context": 32768, "output": 8192 }
+        },
+        "big": {
+          "name": "Pit Crew big model for hard tasks (needs a models.big alias, exclusive mode)",
+          "tool_call": true,
+          "reasoning": true,
+          "limit": { "context": 32768, "output": 8192 }
         }
       }
     }
