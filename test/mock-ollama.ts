@@ -10,7 +10,7 @@ export interface MockModel {
 }
 
 /** A fake Ollama that tracks loaded models and streams OpenAI-style responses. */
-export async function startMockOllama(models: MockModel[], opts: { tokenDelayMs?: number; parallel?: number; loadDelayMs?: number } = {}) {
+export async function startMockOllama(models: MockModel[], opts: { tokenDelayMs?: number; parallel?: number; loadDelayMs?: number; textToolCall?: string } = {}) {
   // Requests the mock serves at once per model (OLLAMA_NUM_PARALLEL); the rest wait in line.
   let active = 0;
   const waiting: (() => void)[] = [];
@@ -117,6 +117,13 @@ export async function startMockOllama(models: MockModel[], opts: { tokenDelayMs?
           send({ id: "x", object: "chat.completion.chunk", choices: [{ index: 0, delta: { reasoning: `hmm${i} ` } }] });
           await delay();
         }
+      }
+      if (opts.textToolCall) {
+        // A model that writes its tool call as answer text (no structured tool_calls).
+        for (let i = 0; i < opts.textToolCall.length; i += 7) send({ id: "x", object: "chat.completion.chunk", choices: [{ index: 0, delta: { content: opts.textToolCall.slice(i, i + 7) } }] });
+        send({ id: "x", object: "chat.completion.chunk", choices: [{ index: 0, delta: { content: "" }, finish_reason: "stop" }] });
+        res.write("data: [DONE]\n\n");
+        return res.end();
       }
       for (let i = 0; i < (body.max_tokens ?? 3); i++) {
         if (res.destroyed) return;

@@ -50,7 +50,8 @@
       "maxChars": 3000
     },
     "loopHints": true,
-    "testRepair": true
+    "testRepair": true,
+    "repairToolCalls": true
   },
   "models": {
     "coder": {

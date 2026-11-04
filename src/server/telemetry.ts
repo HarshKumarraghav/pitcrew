@@ -247,6 +247,8 @@ export interface RequestRecord {
   reasoningChars: number;
   contentChars: number;
   toolCalls: string[];
+  /** Of those, tool calls rebuilt from answer text (toolcalls.ts). */
+  repairedToolCalls?: number;
   finish?: string;
 }
 

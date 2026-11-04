@@ -6,6 +6,22 @@ All notable changes to this project are documented here. The format follows
 
 ## [Unreleased]
 
+### Added
+
+- `router.repairToolCalls` (off by default): when a model writes a tool call as answer text (Qwen
+  XML with or without `<tool_call>`, Hermes `<tool_call>{…}</tool_call>`, or one whole-message JSON
+  object, optionally in a ```json fence) on a `/v1/chat/completions` request that declared tools,
+  the gateway rewrites it into proper `tool_calls` with `finish_reason: "tool_calls"`. Only declared
+  tool names; values typed by the tool's schema; anything unparseable passes through unchanged.
+  Counted in `pitcrew_toolcalls_repaired_total` and `repairedToolCalls` in the request log (no text).
+- Bench config `repair-toolcalls` (today + the flag) and lever `toolcalls` in `levers-all`.
+
+### Fixed
+
+- `bench/e2e.sh` OpenCode check: OpenCode gets `</dev/null` as stdin (`opencode run` waits for
+  piped stdin to close, so the check hung when `e2e.sh` itself ran with an open pipe) and its output
+  is kept in `/tmp/e2e-opencode.log` instead of `/dev/null`.
+
 ## [0.1.0] - 2026-11-04
 
 First public release. Tested on macOS 26 / Apple M5 24 GB / Ollama 0.40 / OpenCode 1.18.

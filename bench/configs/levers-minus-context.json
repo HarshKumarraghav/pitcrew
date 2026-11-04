@@ -46,7 +46,8 @@
     },
     "loopHints": true,
     "testRepair": true,
-    "planFirst": true
+    "planFirst": true,
+    "repairToolCalls": true
   },
   "models": {
     "coder": {

@@ -166,6 +166,28 @@ real Ollama, router, cloud refusal, oversize refusal, streaming, native API, met
 Failed: "OpenCode → Pit Crew edits a file" — after 17 s no `src/version.ts` existed; not yet
 diagnosed.
 
+**Rerun 11-04 16:04 IST** (macOS 26.3.1, Apple M5 24 GB, Ollama 0.40.11, OpenCode 1.18.35, Node
+22.16; on battery; heavy background load from other apps and agent sessions. Memory at gateway start:
+1.7 GB available, 35.5 GB swap, pressure "warn"). **27 / 28 passed.**
+- The OpenCode check now passes (29 s).
+- Failed: "router: helper → small". Memory was too short to load the 0.8B light model without an
+  eviction, so mode C did its documented fallback and sent the helper request to the resident coder
+  ("light model would force an eviction → reuse coder"). This is correct router behaviour under
+  pressure. The check assumes the light model fits. Rerun on a quieter machine before calling it 28/28.
+
+Diagnosis of the 11-03 OpenCode failure: 12 manual repros of the same task, each one sample
+(n = 1). 5 hung, 1 leaked, 6 passed.
+- One repro, with `router.repairToolCalls` off, reproduced the 17 s ending. The model wrote its first
+  tool call as text in a ```json block (`{"tool_call": "bash", "command": "cat > src/version.ts …"}`).
+  Ollama returned it as answer text with `finish_reason: "stop"`, and OpenCode ended the session.
+  `router.repairToolCalls` turns this into a real `bash` call.
+- Five repros hung with no request reaching the gateway (one was stopped early). `opencode run`
+  reads piped stdin and waits for it to close; the check now passes `</dev/null`.
+- A lock on the shared `opencode.db` was suspected and ruled out: 2 passes with the shared DB.
+- 6 passed in 11–60 s: 1 with repair off (before the stdin fix), and 5/5 with repair on and stdin
+  from `/dev/null`. None of the 5 needed a repair. Of the 7 repros that reached the model, 1 leaked,
+  so the leak is occasional, not systematic.
+
 ## Validity notes
 
 - The Mac slept (clamshell, lid closed) 11-03 18:22 → 11-04 00:52 and again 04:00 → 04:04

@@ -14,11 +14,13 @@ const LEVERS = {
   hints: (c) => (c.router.loopHints = true),
   repair: (c) => (c.router.testRepair = true),
   plan: (c) => (c.router.planFirst = true),
+  toolcalls: (c) => (c.router.repairToolCalls = true),
 };
 const cap = (c) => (c.models.coder.maxResidentGiB = 10);
 const out = {
   today: clone(),
   cap: (() => { const c = clone(); cap(c); return c; })(),
+  "repair-toolcalls": (() => { const c = clone(); LEVERS.toolcalls(c); return c; })(),
   "levers-all": (() => { const c = clone(); cap(c); for (const f of Object.values(LEVERS)) f(c); return c; })(),
 };
 for (const drop of Object.keys(LEVERS)) {

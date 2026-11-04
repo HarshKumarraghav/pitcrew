@@ -84,6 +84,11 @@ export interface RouterConfig {
   testRepair: boolean;
   /** M8.3: ask for a short plan before the first tool call (in the stable system block). */
   planFirst: boolean;
+  /**
+   * Rewrite tool calls the model wrote as plain text (Qwen XML, Hermes/bare JSON) into proper
+   * `tool_calls` on /v1/chat/completions requests that declared tools. Unparseable text passes unchanged.
+   */
+  repairToolCalls: boolean;
 }
 
 export interface Config {
@@ -194,6 +199,7 @@ export const DEFAULTS: Config = {
     loopHints: false,
     testRepair: false,
     planFirst: false,
+    repairToolCalls: false,
   },
   telemetry: { enabled: true, coldPrefillTokPerS: 584 },
   allowUndeclared: true,

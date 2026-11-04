@@ -51,10 +51,12 @@ check "manual unload" bash -c "curl -s -XPOST $GW/governor/unload -d '{\"model\"
 check "status command" bash -c "${PC[*]} status | grep -q memory"
 check "OpenCode → Pit Crew: file edit + test run" bash -c "
   D=\$(mktemp -d); cp -R bench/agent/fixture/. \$D; cd \$D && git init -q && git add -A && git -c user.email=e@e -c user.name=e commit -qm base
+  # stdin from /dev/null: \`opencode run\` reads piped stdin and waits for it to close (hung here 11-04).
   OPENCODE_CONFIG=$ROOT/examples/opencode/opencode.pitcrew.json OPENCODE_CONFIG_CONTENT='{\"permission\":{\"edit\":\"allow\",\"bash\":\"allow\",\"external_directory\":\"deny\"}}' \
   OPENCODE_DISABLE_AUTOUPDATE=1 OPENCODE_DISABLE_MODELS_FETCH=1 OPENCODE_DISABLE_LSP_DOWNLOAD=1 OPENCODE_DISABLE_CLAUDE_CODE=1 OPENCODE_DISABLE_EXTERNAL_SKILLS=1 \
-  perl -e 'alarm 600; exec @ARGV' opencode run --pure -m pitcrew/auto 'Add a function export const VERSION = \"0.3.0\" in src/version.ts, then run npm test.' >/dev/null 2>&1
-  grep -q '0.3.0' src/version.ts && npm test 2>&1 | grep -q '^# fail 0'"
+  perl -e 'alarm 600; exec @ARGV' opencode run --pure -m pitcrew/auto 'Add a function export const VERSION = \"0.3.0\" in src/version.ts, then run npm test.' </dev/null >/tmp/e2e-opencode.log 2>&1
+  if grep -q '0.3.0' src/version.ts && npm test 2>&1 | grep -q '^# fail 0'; then exit 0; fi
+  echo \"see /tmp/e2e-opencode.log:\"; tail -c 300 /tmp/e2e-opencode.log | tr -s '\\n' ' '; exit 1"
 check "no cloud in governed run (gateway log)" bash -c "! grep -qi 'cloud' /tmp/e2e-gw.log"
 check "pitcrew clean (dry run lists derived models)" bash -c "${PC[*]} clean | grep -q 'pitcrew/'"
 kill $GWPID 2>/dev/null; wait $GWPID 2>/dev/null

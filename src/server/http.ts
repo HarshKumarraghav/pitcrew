@@ -16,6 +16,7 @@ import { Metrics } from "./metrics.ts";
 import { chooseContext, promptChars, requestedOutput, TokenCalibrator } from "./context.ts";
 import { route } from "./router.ts";
 import { applyLevers, classifyStep } from "./levers.ts";
+import { ToolCallRepair } from "./toolcalls.ts";
 import { StreamTap, RequestLog, derive, requestKind, sessionKey, tailShape, type RequestRecord } from "./telemetry.ts";
 
 const GiB = 1024 ** 3;
@@ -304,6 +305,10 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
     const leaseMs = Date.now() - receivedAt;
     const variant = loadedVariant.get(r.base) ?? derivedName(r.base, lease.ctx, r.spec.parameters ?? {});
     const tap = new StreamTap(receivedAt);
+    const repair =
+      cfg.router.repairToolCalls && kind === "openai" && path === "/v1/chat/completions" && Array.isArray(body.tools) && body.tools.length
+        ? new ToolCallRepair(body.tools, Boolean(body.stream))
+        : undefined;
     let status: RequestRecord["status"] = "error";
     let ok = false;
     try {
@@ -341,11 +346,21 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
             first = false;
             metrics.observe("pitcrew_ttft_seconds", (Date.now() - t0) / 1000, { model: r.base }, undefined, "Time from request to first upstream byte, incl. queue + load (measured)");
           }
-          res.write(chunk);
-          tap.push(chunk);
-          tail = (tail + Buffer.from(chunk).toString("utf8")).slice(-8192);
+          // With repair on, the client and the tap both see the rewritten bytes.
+          const out = repair ? repair.push(chunk) : chunk;
+          if (!out.length) continue;
+          res.write(out);
+          tap.push(out);
+          tail = (tail + Buffer.from(out).toString("utf8")).slice(-8192);
         }
       }
+      const rest = repair?.finish();
+      if (rest?.length) {
+        res.write(rest);
+        tap.push(rest);
+        tail = (tail + rest.toString("utf8")).slice(-8192);
+      }
+      if (repair?.repaired) metrics.inc("pitcrew_toolcalls_repaired_total", { model: r.base }, repair.repaired, "Tool calls rebuilt from answer text");
       res.end();
       ok = upstream.ok;
       const usage = extractUsage(tail);
@@ -399,6 +414,7 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
           reasoningChars: t.reasoningChars,
           contentChars: t.contentChars,
           toolCalls: t.toolCalls,
+          ...(repair?.repaired ? { repairedToolCalls: repair.repaired } : {}),
           finish: t.finish,
           ...derive(t, leaseMs, cfg.telemetry.coldPrefillTokPerS),
         });
