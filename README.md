@@ -312,7 +312,7 @@ Targets were fixed before measuring, and results get published whether or not we
 |---|---|---|
 | 0 | tool-call repair; fix the OpenCode end-to-end check | built, e2e 27/28; repair ablation pending |
 | 1 | stuck signals, quoted test failures, `pitcrew solve` (best-of-N) | built and tested; G–P ablations pending |
-| 2 | "exclusive mode" + a bigger local model (27B) only for hard tasks | next |
+| 2 | "exclusive mode" + a bigger local model (27B) only for hard tasks | built and tested; 27B smoke test and cascade ablation pending |
 | 3 | any agent as front-end (Claude Code, Codex) and optional cloud helper | planned |
 | 4 | 8 GB laptops | planned |
 | 5–6 | public benchmark runs, release | planned |
