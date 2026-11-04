@@ -104,6 +104,29 @@ export async function startMockOllama(models: MockModel[], opts: { tokenDelayMs?
       res.end(JSON.stringify({ model: body.model, response: "", done: true, eval_count: 5 }) + "\n");
       return done();
     }
+    if (url === "/v1/messages") {
+      // Ollama's Anthropic-compatible endpoint: a tool_use block when tools were sent, else text.
+      bodies.push(body);
+      if (!loaded.has(body.model)) loaded.set(body.model, sizeOf(body.model));
+      const input = Math.round(JSON.stringify(body.messages).length / 4);
+      const tool = Array.isArray(body.tools) && body.tools.length ? body.tools[0].name : undefined;
+      const content = tool ? [{ type: "tool_use", id: "toolu_1", name: tool, input: { file_path: "a.ts" } }] : [{ type: "text", text: "hello" }];
+      if (!body.stream) return json(200, { id: "msg_1", type: "message", role: "assistant", model: body.model, content, stop_reason: tool ? "tool_use" : "end_turn", usage: { input_tokens: input, output_tokens: 3 } });
+      res.writeHead(200, { "content-type": "text/event-stream" });
+      const ev = (type: string, o: unknown) => res.write(`event: ${type}\ndata: ${JSON.stringify(o)}\n\n`);
+      ev("message_start", { type: "message_start", message: { id: "msg_1", type: "message", role: "assistant", model: body.model, content: [], usage: { input_tokens: input, output_tokens: 0 } } });
+      if (tool) {
+        ev("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "tool_use", id: "toolu_1", name: tool, input: {} } });
+        ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "input_json_delta", partial_json: '{"file_path":"a.ts"}' } });
+      } else {
+        ev("content_block_start", { type: "content_block_start", index: 0, content_block: { type: "text", text: "" } });
+        ev("content_block_delta", { type: "content_block_delta", index: 0, delta: { type: "text_delta", text: "hello" } });
+      }
+      ev("content_block_stop", { type: "content_block_stop", index: 0 });
+      ev("message_delta", { type: "message_delta", delta: { stop_reason: tool ? "tool_use" : "end_turn" }, usage: { output_tokens: 3 } });
+      ev("message_stop", { type: "message_stop" });
+      return res.end();
+    }
     if (url === "/v1/chat/completions") {
       bodies.push(body);
       if (!loaded.has(body.model)) loaded.set(body.model, sizeOf(body.model));

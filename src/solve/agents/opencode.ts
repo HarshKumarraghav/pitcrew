@@ -16,6 +16,8 @@ export interface AgentRun {
   /** Last part of the agent's final text (kept local, in the solve report only). */
   text: string;
   error?: string;
+  /** Cloud agents only: the cost the agent reports (API-equivalent). */
+  costUsd?: number;
 }
 
 /**

@@ -17,6 +17,7 @@ import { chooseContext, promptChars, requestedOutput, TokenCalibrator } from "./
 import { route } from "./router.ts";
 import { applyLevers, classifyStep } from "./levers.ts";
 import { ToolCallRepair } from "./toolcalls.ts";
+import { isClaudeModel, messagesError, messagesPatch, openAIView } from "./anthropic.ts";
 import { StreamTap, RequestLog, derive, requestKind, sessionKey, tailShape, type RequestRecord } from "./telemetry.ts";
 
 const GiB = 1024 ** 3;
@@ -231,7 +232,7 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
 
   // ─────────────── route handlers ───────────────
 
-  async function proxyModelRequest(req: IncomingMessage, res: ServerResponse, path: string, kind: "openai" | "native" | "embed"): Promise<void> {
+  async function proxyModelRequest(req: IncomingMessage, res: ServerResponse, path: string, kind: "openai" | "native" | "embed" | "anthropic"): Promise<void> {
     const receivedAt = Date.now();
     const raw = await readBody(req);
     let body: Record<string, unknown>;
@@ -242,21 +243,27 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
     }
     let requested = String(body.model ?? "");
     if (!requested) throw new HttpError(400, "model is required");
+    // Claude Code asks for its own model names; on a local-only gateway they mean the router.
+    const mappedFrom = kind === "anthropic" && isClaudeModel(requested) && !cfg.models[requested] ? requested : undefined;
+    if (mappedFrom) requested = cfg.router.name;
+    // Messages requests are classified through an OpenAI-shaped view; the body itself is forwarded.
+    const view = kind === "anthropic" ? openAIView(body) : body;
     let chars = promptChars(body);
     // Telemetry facts are taken from the request as the client sent it (before any router patch).
-    const reqKind = requestKind(body, chars, cfg.router.helperMaxPromptChars);
-    const session = sessionKey(body);
-    const tail = tailShape(body);
-    let step = reqKind === "agent" ? classifyStep(body).step : undefined;
+    const reqKind = requestKind(view, chars, cfg.router.helperMaxPromptChars);
+    const session = sessionKey(view);
+    const tail = tailShape(view);
+    let step = reqKind === "agent" ? classifyStep(view).step : undefined;
     let levers: string[] = [];
     let routeInfo: string | undefined;
     if (requested === cfg.router.name && kind !== "embed") {
       const lightFits = cfg.router.mode === "C" && cfg.router.light ? await canHost(cfg.router.light) : false;
-      const d = route(body, chars, cfg.router, () => lightFits);
+      const d = route(view, chars, cfg.router, () => lightFits);
       requested = d.alias;
-      Object.assign(body, d.patch);
-      routeInfo = `${d.role}->${d.alias} (${d.why.replace(/→/g, "->")})`;
-      if (d.role === "agent") {
+      Object.assign(body, kind === "anthropic" ? messagesPatch(d.patch) : d.patch);
+      routeInfo = `${d.role}->${d.alias} (${d.why.replace(/→/g, "->")})${mappedFrom ? ` [as ${mappedFrom}]` : ""}`;
+      // Levers edit OpenAI-shaped messages; Messages requests are routed and sized, not edited (yet).
+      if (d.role === "agent" && kind !== "anthropic") {
         const lev = applyLevers(body, cfg.router, { session, blocks: leverBlocks });
         step = lev.step.step;
         levers = lev.applied;
@@ -365,7 +372,7 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
       if (repair?.repaired) metrics.inc("pitcrew_toolcalls_repaired_total", { model: r.base }, repair.repaired, "Tool calls rebuilt from answer text");
       res.end();
       ok = upstream.ok;
-      const usage = extractUsage(tail);
+      const usage = kind === "anthropic" ? { prompt_tokens: tap.r.promptTokens } : extractUsage(tail);
       if (usage?.prompt_tokens) {
         tokens.observe(r.base, chars, usage.prompt_tokens);
         if (usage.prompt_tokens > lease.ctx * 0.97) {
@@ -553,6 +560,21 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
     res.end(text);
   }
 
+  /** Anthropic token count: an estimate from the calibrated chars-per-token of the model it would use. */
+  async function countTokens(req: IncomingMessage, res: ServerResponse): Promise<void> {
+    let body: Record<string, unknown>;
+    try {
+      body = JSON.parse((await readBody(req)).toString("utf8") || "{}");
+    } catch {
+      throw new HttpError(400, "invalid JSON body");
+    }
+    let alias = String(body.model ?? cfg.router.name);
+    if (isClaudeModel(alias) && !cfg.models[alias]) alias = cfg.router.name;
+    if (alias === cfg.router.name) alias = cfg.router.coder;
+    const r = await registry.resolve(alias);
+    sendJson(res, 200, { input_tokens: tokens.tokens(r.base, promptChars(body)) });
+  }
+
   async function listModels(res: ServerResponse): Promise<void> {
     await registry.refresh().catch(() => undefined);
     const data = [
@@ -675,6 +697,8 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
       if (req.method === "POST" && (path === "/v1/chat/completions" || path === "/v1/completions" || path === "/v1/responses")) {
         return await proxyModelRequest(req, res, path, "openai");
       }
+      if (req.method === "POST" && path === "/v1/messages") return await proxyModelRequest(req, res, path, "anthropic");
+      if (req.method === "POST" && path === "/v1/messages/count_tokens") return await countTokens(req, res);
       if (req.method === "POST" && path === "/v1/embeddings") return await proxyModelRequest(req, res, path, "embed");
       if (req.method === "POST" && (path === "/api/chat" || path === "/api/generate")) return await proxyModelRequest(req, res, path, "native");
       if (req.method === "POST" && path === "/api/embed") return await proxyModelRequest(req, res, path, "embed");
@@ -728,7 +752,8 @@ export function createGateway(cfg: Config, deps: { client?: OllamaClient; monito
         return;
       }
       if (status === 503) res.setHeader?.("retry-after", "10");
-      sendJson(res, status, errorBody(status === 502 && !(e instanceof BackendError) ? `backend unreachable at ${cfg.backend.url}` : err.message));
+      const message = status === 502 && !(e instanceof BackendError) ? `backend unreachable at ${cfg.backend.url}` : err.message;
+      sendJson(res, status, path.startsWith("/v1/messages") ? messagesError(status, message) : errorBody(message));
     }
   });
 

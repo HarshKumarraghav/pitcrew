@@ -99,6 +99,7 @@ export class StreamTap {
 
   private event(e: Record<string, unknown>): void {
     const at = this.at();
+    if (typeof e.type === "string" && this.anthropic(e, at)) return;
     const usage = e.usage as Record<string, unknown> | undefined;
     if (usage) {
       if (typeof usage.prompt_tokens === "number") this.r.promptTokens = usage.prompt_tokens;
@@ -121,6 +122,57 @@ export class StreamTap {
       const d = (c.delta ?? c.message) as Record<string, unknown> | undefined;
       if (d) this.delta(d, at);
       if (typeof c.finish_reason === "string") this.r.finish = c.finish_reason;
+    }
+  }
+
+  /** Anthropic Messages events (stream) or a whole message (JSON). Returns false for other shapes. */
+  private anthropic(e: Record<string, unknown>, at: number): boolean {
+    type U = { input_tokens?: number; output_tokens?: number; cache_read_input_tokens?: number; cache_creation_input_tokens?: number };
+    const usage = (u: U | undefined) => {
+      if (!u) return;
+      if (typeof u.input_tokens === "number") this.r.promptTokens = u.input_tokens + (u.cache_read_input_tokens ?? 0) + (u.cache_creation_input_tokens ?? 0);
+      if (typeof u.output_tokens === "number") this.r.completionTokens = u.output_tokens;
+    };
+    const block = (b: { type?: string; text?: string; thinking?: string; name?: string; input?: unknown } | undefined) => {
+      if (b?.type === "text" && b.text) this.text("content", b.text, at);
+      if (b?.type === "thinking" && b.thinking) this.text("reasoning", b.thinking, at);
+      if (b?.type === "tool_use" && b.name) {
+        this.r.firstContentMs ??= at;
+        this.r.toolCalls.push(b.name);
+        if (b.input && typeof b.input === "object" && Object.keys(b.input).length) this.r.toolArgChars += JSON.stringify(b.input).length;
+      }
+    };
+    switch (e.type) {
+      case "message_start":
+        usage((e.message as { usage?: U } | undefined)?.usage);
+        return true;
+      case "content_block_start":
+        block(e.content_block as Parameters<typeof block>[0]);
+        return true;
+      case "content_block_delta": {
+        const d = (e.delta ?? {}) as { type?: string; text?: string; thinking?: string; partial_json?: string };
+        if (d.type === "text_delta" && d.text) this.text("content", d.text, at);
+        if (d.type === "thinking_delta" && d.thinking) this.text("reasoning", d.thinking, at);
+        if (d.type === "input_json_delta" && d.partial_json) this.r.toolArgChars += d.partial_json.length;
+        return true;
+      }
+      case "message_delta": {
+        const d = (e.delta ?? {}) as { stop_reason?: string };
+        if (typeof d.stop_reason === "string") this.r.finish = d.stop_reason;
+        usage(e.usage as U | undefined);
+        return true;
+      }
+      case "message":
+        for (const b of (e.content as Parameters<typeof block>[0][] | undefined) ?? []) block(b);
+        if (typeof e.stop_reason === "string") this.r.finish = e.stop_reason;
+        usage(e.usage as U | undefined);
+        return true;
+      case "content_block_stop":
+      case "message_stop":
+      case "ping":
+        return true;
+      default:
+        return false;
     }
   }
 

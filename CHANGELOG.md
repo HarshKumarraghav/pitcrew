@@ -30,6 +30,16 @@ All notable changes to this project are documented here. The format follows
   shown on the dashboard.
 - `pitcrew solve --escalate <model>`: one last attempt with a stronger model (e.g. a 27B in exclusive
   mode) when the regular attempts found no strong evidence. Bench config `cascade`.
+- Claude Code on local models: `POST /v1/messages` and `/v1/messages/count_tokens` (Anthropic API;
+  `claude-*` names are served by the router; helper requests get thinking off), and `bin/claude-local`,
+  which points Claude Code at the gateway for one process, declares the real context window and turns
+  off non-essential traffic. Step classes and stuck signals understand Claude Code's and Codex's tool
+  names.
+- `pitcrew agents`: installed coding agents, login state (versions and `claude auth status` only),
+  and what Pit Crew can do with each.
+- `pitcrew solve --agent claude` (local attempts by Claude Code through the gateway) and
+  `--helper claude` / `helper.agent` (default off): your own Claude Code login as a last resort, with
+  a handoff of the task, the failing tests and the best local diff; capped by `helper.maxPerDay`.
 - Catalog `BIG_MODELS` / `bigModelFor()`: Qwen3.8-27B at ~3-bit for 24 GB, ~4-bit from 32 GB (never
   picked by `init`). `bench/tools/toolcall-smoke.mjs` checks a model's tool calling before use.
 

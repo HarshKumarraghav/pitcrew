@@ -234,6 +234,31 @@ Explain the plan to me and wait for my OK before downloading models or writing f
 It runs `init --json`, explains the recommendation, applies it after you agree, starts the gateway
 and runs `doctor`. Steps: [docs/AGENT_SETUP.md](docs/AGENT_SETUP.md).
 
+### Use Claude Code on your local models
+
+Prefer Claude Code's interface? Point it at Pit Crew instead of the cloud:
+
+```sh
+npx pitcrew-ai serve          # in one terminal
+bin/claude-local              # from a clone of this repo: Claude Code, same flags, on qwen3.5:9b
+```
+
+`bin/claude-local` sets everything for that one process only; `~/.claude` and your login are not
+changed.
+- **Gateway:** it points Claude Code at `127.0.0.1:11500`, Pit Crew's local copy of the Anthropic
+  Messages API. Any `claude-*` model name is served by the local router.
+- **Context:** it declares the local model's real window (32k), so Claude Code compacts in time
+  instead of assuming 200k.
+- **Traffic:** it turns off Claude Code's non-essential traffic.
+
+Measured once (n = 1, on battery): Claude Code + Pit Crew + `qwen3.5:9b` passed **task D** in 60 s,
+with hidden checks passing. A per-process watcher saw no outside connections. Caveats:
+- Anthropic does not support Claude Code on non-Claude models. It works, unsupported.
+- The opt-in levers (hints, retrieval) only edit OpenCode-style requests so far. Claude Code
+  requests get routing, memory management and context sizing.
+
+`pitcrew agents` lists which coding agents are installed and what Pit Crew can do with each.
+
 ### From source
 
 ```sh
@@ -255,6 +280,7 @@ profile it uses.
 | `pitcrew doctor` | check Ollama, models, memory, gateway and OpenCode; print fixes |
 | `pitcrew serve` | gateway, router, scheduler, dashboard |
 | `pitcrew solve "<task>"` *(experimental)* | best-of-N attempts in throwaway git worktrees, judged by your repo's own tests; `--apply` writes a passing attempt to your checkout |
+| `pitcrew agents` | coding agents installed here (Claude Code, OpenCode, Codex…), logged in or not, and how Pit Crew can use each |
 | `pitcrew audit` | machine, memory, swap, pressure, runtimes, local and cloud models |
 | `pitcrew garage` | each local model's estimated / calibrated / measured memory and whether it fits now |
 | `pitcrew scout <repo>` | analyse a repository (deterministic) |
@@ -281,7 +307,14 @@ therefore counts only if:
 - it adds a test that **fails on the original code and passes with the change**.
 
 Attempts that delete, skip or edit existing tests are never applied. Your checkout is untouched unless
-you pass `--apply`. Results so far: it works end to end (task D solved on the first attempt, hidden
+you pass `--apply`.
+
+Options:
+- `--agent claude`: Claude Code makes the local attempts instead of OpenCode.
+- `--escalate pitcrew/big`: one last attempt with a 27B model in exclusive mode.
+- `--helper claude` *(off by default)*: if nothing local produced evidence, **your own** Claude Code
+  login gets the task, the failing tests and the best local diff. It is capped per day
+  (`helper.maxPerDay`). With no helper set, `solve` makes no cloud calls. Results so far: it works end to end (task D solved on the first attempt, hidden
 checks pass), but the best-of-3 benchmark has **not been run yet**.
 
 ## What it does not do (yet)
@@ -313,7 +346,7 @@ Targets were fixed before measuring, and results get published whether or not we
 | 0 | tool-call repair; fix the OpenCode end-to-end check | built, e2e 27/28; repair ablation pending |
 | 1 | stuck signals, quoted test failures, `pitcrew solve` (best-of-N) | built and tested; G–P ablations pending |
 | 2 | "exclusive mode" + a bigger local model (27B) only for hard tasks | built and tested; 27B smoke test and cascade ablation pending |
-| 3 | any agent as front-end (Claude Code, Codex) and optional cloud helper | planned |
+| 3 | any agent as front-end (Claude Code, Codex) and optional cloud helper | Claude Code front-end + helper built and checked once (task D, local); Codex not installed here, untested |
 | 4 | 8 GB laptops | planned |
 | 5–6 | public benchmark runs, release | planned |
 

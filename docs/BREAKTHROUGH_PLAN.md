@@ -218,6 +218,41 @@ and the cascade ablation still need the Mac on power.
 - Config `helper: { agent: null | "claude" | "codex" | "gemini", maxPerDay }` — **default null**; `pitcrew agents`
   lists what is installed; dashboard and solve report show local vs escalated and helper usage.
 
+**Phase 3 status (11-04):** Claude Code done; Codex and Gemini not done (not installed here).
+- **Front-end:**
+  - **Endpoints:** `POST /v1/messages` + `/v1/messages/count_tokens` (`src/server/anthropic.ts`).
+    `claude-*` names → router; the body is forwarded as sent to Ollama's own `/v1/messages`. Helper
+    requests get `thinking: disabled` and capped output.
+  - **Shared plumbing:** same leases, context sizing and telemetry as OpenCode. `StreamTap` reads
+    Anthropic events. Errors use Anthropic's envelope. `count_tokens` is answered locally.
+  - **Launcher:** `bin/claude-local` sets env vars found in Claude Code 2.1.316:
+    `ANTHROPIC_BASE_URL`/`_AUTH_TOKEN`/`_MODEL`/`_DEFAULT_*_MODEL`, `CLAUDE_CODE_MAX_CONTEXT_TOKENS`
+    + `_AUTO_COMPACT_WINDOW` (Claude Code then reported `contextWindow: 32768`),
+    `CLAUDE_CODE_MAX_OUTPUT_TOKENS`, `CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC`.
+- **Levers on Claude Code:**
+  - **Tool names:** `canonicalTool()` maps Claude Code's tools (Read/Edit/MultiEdit/Bash, `file_path`,
+    `old_string`) and Codex's (shell/apply_patch) onto OpenCode's. Step classes and stuck signals
+    therefore work: a failing test run (`Exit code 1` Bash result) is "after-test-fail", not an error.
+  - **Not yet:** the levers do not edit Messages requests yet.
+- **Checked:** Claude Code → Pit Crew → qwen3.5:9b passed task D in 60 s (n = 1, on battery,
+  functional). Steps: first → after-test-fail → after-read → after-edit. A per-process watcher saw
+  0 non-loopback connections.
+- **Helper:**
+  - **Detection:** `pitcrew agents` reads versions and `claude auth status`'s loggedIn/authMethod
+    only.
+  - **Adapter:** `src/solve/agents/claude.ts` runs headless and isolated: project settings only, no
+    MCP, no web tools, `dontAsk` + an allow-list incl. the project's test command.
+  - **Using it:** `solve --helper claude` / config `helper.agent` (default null = no cloud calls) runs
+    last, only without strong evidence. It gets a handoff of task + failing tests + best local diff,
+    and is capped by `helper.maxPerDay`. `solve --agent claude` makes the local attempts with Claude
+    Code through the gateway.
+- **Not done:**
+  - Codex front-end/helper: Codex is not installed here, so `/v1/responses` with Codex is
+    unverified.
+  - Gemini: needs a translating proxy.
+  - Levers on Messages requests.
+  - A T3 measurement: helper usage vs solo.
+
 ### Phase 4 — any laptop, from 8 GB (≈ 1–2 days) → T5, T6
 - Finish `src/setup/catalog.ts` tiers (8 GB: 2B/4B coder, no second model, 16k ctx, idle unload 2 min; helpers on
   the same model with thinking off). Live downgrade when headroom shrinks (scheduler hook + dashboard notice).

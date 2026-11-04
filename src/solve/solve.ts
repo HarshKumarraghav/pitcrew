@@ -1,4 +1,4 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { scanProject } from "../intel/index.ts";
 import type { Agent, AgentRun } from "./agents/opencode.ts";
@@ -38,6 +38,12 @@ export interface SolveOptions {
    * regular attempts found no strong evidence. It gets whatever budget is left.
    */
   escalate?: Agent;
+  /**
+   * The user's own cloud agent, used last and only when every local attempt failed to produce
+   * strong evidence. It gets a handoff: the task, the failing tests and the best local diff.
+   * Never set by default; `maxPerDay` is counted in `usageFile`.
+   */
+  helper?: { agent: Agent; maxPerDay: number; usageFile: string };
 }
 
 export interface AttemptReport {
@@ -68,6 +74,8 @@ export interface SolveReport {
   applyError?: string;
   budgetMs: number;
   ms: number;
+  /** Cloud helper: whether it ran, why not, and what it reported costing. */
+  helper?: { used: boolean; reason?: string; costUsd?: number };
 }
 
 const TEST_FIRST = "\n\nWork test-first: add a new test that reproduces the problem or specifies the new behaviour and check that it fails, then change the code until the whole test suite passes. Do not edit, skip or delete existing tests.";
@@ -107,9 +115,20 @@ export async function solve(o: SolveOptions): Promise<SolveReport> {
     log(`baseline: \`${testCommand}\` ${b.ok ? "passes" : `fails (${b.failing.length || b.fail || "?"} failing)`} at ${base.rev.slice(0, 8)}${base.dirty ? " (incl. uncommitted edits)" : ""}`);
     const ctx = { baseRev: base.rev, command: testCommand, timeoutMs: testTimeoutMs, baselineFailed: !b.ok, baseTree };
 
-    const plan = [...Array.from({ length: attempts }, () => o.agent), ...(o.escalate ? [o.escalate] : [])];
+    const plan = [...Array.from({ length: attempts }, () => o.agent), ...(o.escalate ? [o.escalate] : []), ...(o.helper ? [o.helper.agent] : [])];
     for (let n = 1; n <= plan.length; n++) {
       const agent = plan[n - 1]!;
+      const isHelper = agent === o.helper?.agent;
+      let prompt = o.task + (o.testFirst ? TEST_FIRST : "");
+      if (isHelper) {
+        const used = helperUsedToday(o.helper!.usageFile);
+        if (used >= o.helper!.maxPerDay) {
+          report.helper = { used: false, reason: `daily limit reached (${used}/${o.helper!.maxPerDay})` };
+          log(`helper skipped: ${report.helper.reason}`);
+          break;
+        }
+        prompt = handoff(o.task, [...verdicts.values()].sort((x, y) => rank(x.v, y.v))[0]);
+      }
       const remaining = budgetMs - (now() - t0);
       if (remaining < minAttemptMs) {
         log(`budget spent: ${Math.round(remaining / 1000)} s left, stopping before attempt ${n}`);
@@ -121,10 +140,15 @@ export async function solve(o: SolveOptions): Promise<SolveReport> {
       const a: AttemptReport = { n, agentName: agent.name, timeoutMs, agent: { exitCode: null, timedOut: false, ms: 0, steps: 0, toolCalls: 0, toolErrors: 0 } };
       report.attempts.push(a);
       try {
-        log(`attempt ${n}/${plan.length}: ${agent.name}${agent === o.escalate ? " (escalation)" : ""}, up to ${Math.round(timeoutMs / 1000)} s`);
+        log(`attempt ${n}/${plan.length}: ${agent.name}${agent === o.escalate ? " (escalation)" : isHelper ? " (cloud helper, your account)" : ""}, up to ${Math.round(timeoutMs / 1000)} s`);
+        if (isHelper) {
+          countHelperRun(o.helper!.usageFile);
+          report.helper = { used: true };
+        }
         o.onEvent?.(JSON.stringify({ type: "pitcrew_attempt", n, agent: agent.name }));
-        const { text: _text, ...run } = await agent.run({ dir: wt.dir, prompt: o.task + (o.testFirst ? TEST_FIRST : ""), timeoutMs, onEvent: o.onEvent });
+        const { text: _text, ...run } = await agent.run({ dir: wt.dir, prompt, timeoutMs, onEvent: o.onEvent });
         a.agent = run;
+        if (isHelper && report.helper) report.helper.costUsd = run.costUsd;
         const v = await judgeAttempt(wt, ctx);
         const patch = wt.patch();
         a.patch = join(o.outDir, `attempt-${n}.patch`);
@@ -160,6 +184,39 @@ export async function solve(o: SolveOptions): Promise<SolveReport> {
     writeFileSync(join(o.outDir, "report.json"), JSON.stringify(report, null, 2));
   }
   return report;
+}
+
+const today = () => new Date().toISOString().slice(0, 10);
+function helperUsedToday(file: string): number {
+  try {
+    return (JSON.parse(readFileSync(file, "utf8")) as Record<string, number>)[today()] ?? 0;
+  } catch {
+    return 0;
+  }
+}
+function countHelperRun(file: string): void {
+  let d: Record<string, number> = {};
+  try {
+    if (existsSync(file)) d = JSON.parse(readFileSync(file, "utf8"));
+  } catch {
+    d = {};
+  }
+  d[today()] = (d[today()] ?? 0) + 1;
+  writeFileSync(file, JSON.stringify(d));
+}
+
+/** What the helper gets: the task, what still fails, and the best local attempt as a starting point. */
+export function handoff(task: string, best?: { v: Verdict; patch: string }): string {
+  if (!best || !best.patch.trim()) return task;
+  const failing = best.v.tests.failing.slice(0, 8).map((t) => `- ${t.name}${t.detail ? `: ${t.detail}` : ""}`).join("\n");
+  const diff = best.patch.length > 6000 ? `${best.patch.slice(0, 6000)}\n… (truncated)` : best.patch;
+  return `${task}
+
+Context: a local model already tried this. Its best attempt is below; it is not applied here and it did not pass (${best.v.tests.ok ? "tests pass but nothing shows the change works" : "tests fail"}).${failing ? `\nStill failing:\n${failing}` : ""}
+\`\`\`diff
+${diff}
+\`\`\`
+Use it only if it helps; verify with the project's tests.`;
 }
 
 export function describe(v: Verdict): string {

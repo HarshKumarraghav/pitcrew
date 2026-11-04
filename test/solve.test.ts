@@ -169,3 +169,52 @@ test("durations", () => {
   assert.equal(parseDuration("1.5h"), 5_400_000);
   assert.throws(() => parseDuration("soon"));
 });
+
+test("solve: the cloud helper runs last, only without strong evidence, gets a handoff, and is capped per day", async () => {
+  const dir = repo(true);
+  const usageFile = join(dir, "..", `helper-usage-${Math.random()}.json`);
+  const prompts: string[] = [];
+  const helper = scripted([FIX], prompts);
+  helper.name = "cloud";
+  const partial = (d: string) => writeFileSync(join(d, "src", "add.js"), "export const add = (a, b) => a * b + 1;\n");
+  const r = await solve(opts(dir, scripted([partial, partial]), { attempts: 2, helper: { agent: helper, maxPerDay: 1, usageFile } }));
+  assert.deepEqual(r.attempts.map((a) => a.agentName), ["scripted", "scripted", "cloud"]);
+  assert.equal(r.status, "solved");
+  assert.equal(r.helper?.used, true);
+  assert.match(prompts[0]!, /^fix it\n\nContext: a local model already tried this/);
+  assert.match(prompts[0]!, /Still failing:\n- adds/);
+  assert.match(prompts[0]!, /```diff\n[\s\S]*a \* b \+ 1/);
+  // Daily cap: the second run skips the helper.
+  const r2 = await solve(opts(repo(true), scripted([partial]), { attempts: 1, helper: { agent: scripted([FIX]), maxPerDay: 1, usageFile } }));
+  assert.equal(r2.attempts.length, 1);
+  assert.deepEqual(r2.helper, { used: false, reason: "daily limit reached (1/1)" });
+  // Solved locally: the helper never runs.
+  const never = scripted([FIX]);
+  const r3 = await solve(opts(repo(true), scripted([FIX]), { attempts: 1, helper: { agent: never, maxPerDay: 9, usageFile: `${usageFile}.2` } }));
+  assert.equal(r3.helper, undefined);
+  assert.equal(existsSync(`${usageFile}.2`), false);
+});
+
+test("claude adapter: isolated headless flags, prompt on stdin, stream-json parsed", async () => {
+  const bin = join(realpathSync(mkdtempSync(join(tmpdir(), "pitcrew-fake-claude-"))), "claude");
+  writeFileSync(bin, `#!/bin/sh
+cat > "$FAKE_CLAUDE.stdin"
+echo "$@" > "$FAKE_CLAUDE.args"
+echo "$ANTHROPIC_BASE_URL" > "$FAKE_CLAUDE.env"
+echo '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read"},{"type":"text","text":"fixed it"}]}}'
+echo '{"type":"user","message":{"content":[{"type":"tool_result","is_error":true}]}}'
+echo '{"type":"result","num_turns":3,"total_cost_usd":0.42,"result":"ok"}'
+`);
+  chmodSync(bin, 0o755);
+  process.env.FAKE_CLAUDE = bin;
+  const { claudeAgent } = await import("../src/solve/agents/claude.ts");
+  const { localClaudeEnv } = await import("../src/solve/cli.ts");
+  const r = await claudeAgent({ bin, testCommand: "npm test", env: localClaudeEnv("http://127.0.0.1:11500", "auto") }).run({ dir: tmpdir(), prompt: "do the thing", timeoutMs: 10_000 });
+  assert.deepEqual([r.exitCode, r.toolCalls, r.toolErrors, r.steps, r.costUsd], [0, 1, 1, 3, 0.42]);
+  assert.match(r.text, /fixed it/);
+  assert.equal(readFileSync(`${bin}.stdin`, "utf8"), "do the thing");
+  const argv = readFileSync(`${bin}.args`, "utf8");
+  for (const flag of ["-p", "--setting-sources project,local", "--strict-mcp-config", "--no-session-persistence", "--permission-mode dontAsk", "--disallowedTools WebFetch,WebSearch"]) assert.ok(argv.includes(flag), flag);
+  assert.match(argv, /--allowedTools Read,Glob,Grep,Edit,MultiEdit,Write,TodoWrite,Bash\(npm test\),Bash\(npm test:\*\),Bash\(git status:\*\)/);
+  assert.equal(readFileSync(`${bin}.env`, "utf8").trim(), "http://127.0.0.1:11500");
+});

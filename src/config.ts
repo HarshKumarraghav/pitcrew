@@ -164,6 +164,11 @@ export interface Config {
     /** Cold prefill rate used to estimate uncached prompt tokens (measured: 584 tok/s, qwen3.5:9b, M5). */
     coldPrefillTokPerS: number;
   };
+  /**
+   * Your own cloud agent as a last resort for `pitcrew solve` (off by default: null = never).
+   * It runs only after every local attempt failed to produce evidence, at most `maxPerDay` times.
+   */
+  helper: { agent: null | "claude"; maxPerDay: number };
   /** Allow model names that are not declared as aliases (still local-only). */
   allowUndeclared: boolean;
   stateDir: string;
@@ -217,6 +222,7 @@ export const DEFAULTS: Config = {
     repairToolCalls: false,
   },
   telemetry: { enabled: true, coldPrefillTokPerS: 584 },
+  helper: { agent: null, maxPerDay: 5 },
   allowUndeclared: true,
   stateDir: join(homedir(), ".pitcrew"),
 };

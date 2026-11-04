@@ -1,0 +1,26 @@
+#!/usr/bin/env bash
+# Launch Claude Code on your local models through Pit Crew. Everything is set for this process only;
+# ~/.claude and your login are left untouched. Needs the gateway running (`npx pitcrew-ai serve`).
+# Note: Anthropic does not support Claude Code on non-Claude models; this works, unsupported.
+set -euo pipefail
+PORT="${PITCREW_PORT:-11500}"
+MODEL="${PITCREW_MODEL:-auto}"                 # the router: agent turns → coder, helpers → light model
+CTX="${PITCREW_CONTEXT:-32768}"                # the local model's real window (Claude Code assumes 200K)
+curl -sf "http://127.0.0.1:$PORT/healthz" >/dev/null || {
+  echo "claude-local: Pit Crew is not running on port $PORT; start it with: npx pitcrew-ai serve" >&2
+  exit 1
+}
+export ANTHROPIC_BASE_URL="http://127.0.0.1:$PORT"
+export ANTHROPIC_AUTH_TOKEN="pitcrew"          # any value; the local gateway does not check it
+unset ANTHROPIC_API_KEY                         # never hand a real key to the gateway
+export ANTHROPIC_MODEL="$MODEL"
+export ANTHROPIC_SMALL_FAST_MODEL="$MODEL"
+export ANTHROPIC_DEFAULT_HAIKU_MODEL="$MODEL"
+export ANTHROPIC_DEFAULT_SONNET_MODEL="$MODEL"
+export ANTHROPIC_DEFAULT_OPUS_MODEL="$MODEL"
+export CLAUDE_CODE_MAX_CONTEXT_TOKENS="$CTX"
+export CLAUDE_CODE_AUTO_COMPACT_WINDOW="$CTX"
+export CLAUDE_CODE_MAX_OUTPUT_TOKENS="${PITCREW_MAX_OUTPUT:-4096}"
+export CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1   # no telemetry, error reports or update checks
+export DISABLE_AUTOUPDATER=1
+exec claude "$@"

@@ -18,10 +18,18 @@ export type StepClass = "first" | "after-read" | "after-edit" | "after-test-fail
 type Msg = { role?: string; content?: unknown; tool_calls?: { id?: string; function?: { name?: string; arguments?: unknown } }[]; tool_call_id?: string };
 
 const READ_ONLY = new Set(["read", "glob", "grep", "list", "ls", "todoread"]);
+/** Other agents' tool names on OpenCode's (Claude Code: Read/Edit/MultiEdit/Bash…; Codex: shell/apply_patch). */
+const TOOL_ALIASES: Record<string, string> = { multiedit: "edit", notebookedit: "edit", str_replace_based_edit_tool: "edit", apply_patch: "edit", shell: "bash", local_shell: "bash", read_file: "read", list_dir: "list" };
+export const canonicalTool = (name: string | undefined): string => {
+  const l = (name ?? "").toLowerCase();
+  return TOOL_ALIASES[l] ?? l;
+};
+/** First present argument among the agents' spellings (filePath / file_path / path). */
+const arg = (a: Record<string, unknown> | undefined, ...keys: string[]) => keys.map((k) => a?.[k]).find((v) => v !== undefined);
 /** Error results as OpenCode reports them (captured 11-04, OpenCode 1.18.35). */
 const TOOL_ERROR = /^(File not found|Could not find oldString|Error\b|error:|The user has specified a rule|Invalid|invalid arguments|Tool .* (not found|failed))|is not a valid tool|unknown tool/i;
 const TEST_FAIL = /^# fail [1-9]|^not ok \d|^\s*FAIL\b|AssertionError|npm ERR!|\b[1-9]\d* (failed|failing)\b/m;
-const EDIT_MISS = /^Could not find oldString/;
+const EDIT_MISS = /^(Error: )?(Could not find oldString|String to replace not found)/;
 
 export function textOf(content: unknown): string {
   if (typeof content === "string") return content;
@@ -118,7 +126,7 @@ export interface StepInfo {
 }
 
 const STUCK_AFTER = 3;
-const EDIT_OK = /applied successfully|Wrote file successfully|^\s*$/i;
+const EDIT_OK = /applied successfully|Wrote file successfully|has been updated|File created successfully|^\s*$/i;
 
 /** Every tool call in order, with its name, arguments and result text. */
 function toolHistory(msgs: Msg[]): { name: string; args: Record<string, unknown>; result: string; turn: number }[] {
@@ -134,7 +142,7 @@ function toolHistory(msgs: Msg[]): { name: string; args: Record<string, unknown>
         } catch {
           // unparsable arguments
         }
-        if (t.id) calls.set(t.id, { name: t.function?.name ?? "", args, turn });
+        if (t.id) calls.set(t.id, { name: canonicalTool(t.function?.name), args, turn });
       }
     } else if (m.role === "tool") {
       const c = calls.get(m.tool_call_id ?? "");
@@ -172,9 +180,10 @@ export function stuckSignal(msgs: Msg[], lastA: number): StuckSignal | undefined
     const useless: boolean[] = [];
     for (const h of hist) {
       if (h.name !== "edit" && h.name !== "write") continue;
-      const f = String(h.args.filePath ?? "");
-      const key = h.name === "edit" ? `e\0${f}\0${h.args.oldString}\0${h.args.newString}` : `w\0${f}\0${h.args.content}`;
-      const inverse = h.name === "edit" ? `e\0${f}\0${h.args.newString}\0${h.args.oldString}` : "";
+      const f = String(arg(h.args, "filePath", "file_path", "path") ?? "");
+      const [o, n] = [arg(h.args, "oldString", "old_string"), arg(h.args, "newString", "new_string")];
+      const key = h.name === "edit" ? `e\0${f}\0${o}\0${n}` : `w\0${f}\0${h.args.content}`;
+      const inverse = h.name === "edit" ? `e\0${f}\0${n}\0${o}` : "";
       useless.push(TOOL_ERROR.test(h.result.slice(0, 300)) || !EDIT_OK.test(h.result.slice(0, 200)) || seen.has(key) || seen.has(inverse));
       seen.add(key);
     }
@@ -198,7 +207,7 @@ export function classifyStep(body: Record<string, unknown>): StepInfo {
   if (lastA < 0 || last?.role === "user" || last?.role === "system") return { step: "first", repeat: 1, tools: [] };
   const a = msgs[lastA]!;
   const results = msgs.slice(lastA + 1).filter((m) => m.role === "tool");
-  const nameOf = (id?: string) => a.tool_calls?.find((t) => t.id === id)?.function?.name ?? "";
+  const nameOf = (id?: string) => canonicalTool(a.tool_calls?.find((t) => t.id === id)?.function?.name);
   const tools = results.map((r) => nameOf(r.tool_call_id));
 
   // Repeat count over the trailing assistant turns.
@@ -229,7 +238,8 @@ export function classifyStep(body: Record<string, unknown>): StepInfo {
       const call = a.tool_calls?.find((t) => t.id === r.tool_call_id);
       try {
         const args = typeof call?.function?.arguments === "string" ? JSON.parse(call.function.arguments) : call?.function?.arguments;
-        if (args?.filePath) info.editMiss = { filePath: String(args.filePath), oldString: String(args.oldString ?? "") };
+        const file = arg(args, "filePath", "file_path", "path");
+        if (file) info.editMiss = { filePath: String(file), oldString: String(arg(args, "oldString", "old_string") ?? "") };
       } catch {
         // unparsable arguments: no excerpt
       }
